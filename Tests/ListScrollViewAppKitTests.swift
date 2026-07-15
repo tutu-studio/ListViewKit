@@ -118,6 +118,37 @@ struct ListScrollViewAppKitTests {
     }
 
     @Test
+    func verticalScrollerDoesNotDoubleUnderlappingWindowSafeArea() throws {
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.titlebarAppearsTransparent = true
+        let scrollView = ListScrollView(frame: window.contentView?.bounds ?? .zero)
+        window.contentView = scrollView
+        scrollView.contentSize = CGSize(width: 400, height: 1_000)
+        scrollView.layoutSubtreeIfNeeded()
+
+        let safeAreaTop = scrollView.safeAreaInsets.top
+        let scroller = try #require(
+            scrollView.subviews
+                .flatMap(\.subviews)
+                .compactMap { $0 as? NSScroller }
+                .first
+        )
+        let frameInScrollView = scroller.convert(scroller.bounds, to: scrollView)
+        let endpointInset = ceil(NSScroller.scrollerWidth(
+            for: .regular,
+            scrollerStyle: .overlay
+        ) / 2)
+
+        #expect(safeAreaTop > 0)
+        #expect(frameInScrollView.minY == max(safeAreaTop, endpointInset))
+    }
+
+    @Test
     func verticalScrollerHidesWhenContentFitsOrItIsDisabled() throws {
         let scrollView = ListScrollView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
         let scroller = try #require(

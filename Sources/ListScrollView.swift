@@ -518,19 +518,20 @@ import SpringInterpolation
                     : false
                 scrollerOverlay.hasVerticalScroller = true
 
-                // Overlay knobs sit close enough to the trailing edge that a window's
-                // rounded corners can clip their endpoints. NSView does not report
-                // those corners through safeAreaInsets, so retain at least half a
-                // regular scroller width at each end of the track.
+                // NSScrollView already applies its own safe area when tiling the
+                // scroller. Add only the remainder needed to protect overlay knob
+                // endpoints from rounded window corners; copying safeAreaInsets
+                // into scrollerInsets would count an underlapping titlebar twice.
                 let endpointInset = ceil(NSScroller.scrollerWidth(
                     for: .regular,
                     scrollerStyle: .overlay
                 ) / 2)
+                let overlaySafeAreaInsets = scrollerOverlay.safeAreaInsets
                 scrollerOverlay.scrollerInsets = NSEdgeInsets(
-                    top: max(safeAreaInsets.top, endpointInset),
-                    left: safeAreaInsets.left,
-                    bottom: max(safeAreaInsets.bottom, endpointInset),
-                    right: safeAreaInsets.right
+                    top: max(0, endpointInset - overlaySafeAreaInsets.top),
+                    left: 0,
+                    bottom: max(0, endpointInset - overlaySafeAreaInsets.bottom),
+                    right: 0
                 )
                 scrollerOverlay.layoutSubtreeIfNeeded()
 
