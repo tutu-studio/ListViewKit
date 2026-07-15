@@ -93,6 +93,19 @@ struct ListViewScrollAppKitTests {
     }
 
     @Test
+    func visibleIndicesExcludeRowsTouchingViewportEdges() {
+        let context = makeListView()
+        let listView = context.listView
+
+        listView.contentOffset.y = 500
+        #expect(listView.indicesForVisibleRows == [5, 6])
+
+        listView.topInset = 40
+        listView.contentOffset.y = 540
+        #expect(listView.indicesForVisibleRows == [5, 6])
+    }
+
+    @Test
     func invalidRowDoesNotChangeTheContentOffset() {
         let context = makeListView()
         let listView = context.listView

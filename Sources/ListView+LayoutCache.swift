@@ -106,9 +106,40 @@ extension ListView {
             return frameCache[index]
         }
 
-        func allFrames() -> [Int: CGRect] {
+        func indices(intersecting rect: CGRect) -> [Int] {
             if isCacheInvalid { rebuild() }
-            return frameCache
+            let count = numberOfItems
+            guard count > 0, !rect.isEmpty else { return [] }
+
+            // A complete cache is ordered vertically by index, so locate the
+            // first row whose lower edge extends into the visible rectangle.
+            guard frameCache.count == count else {
+                return frameCache
+                    .filter { $0.key < count && $0.value.intersects(rect) }
+                    .map(\.key)
+                    .sorted()
+            }
+
+            var lowerBound = 0
+            var upperBound = count
+            while lowerBound < upperBound {
+                let middle = lowerBound + (upperBound - lowerBound) / 2
+                guard let frame = frameCache[middle] else { return [] }
+                if frame.maxY <= rect.minY {
+                    lowerBound = middle + 1
+                } else {
+                    upperBound = middle
+                }
+            }
+
+            var result: [Int] = []
+            var index = lowerBound
+            while index < count, let frame = frameCache[index] {
+                if frame.minY >= rect.maxY { break }
+                if frame.intersects(rect) { result.append(index) }
+                index += 1
+            }
+            return result
         }
 
         func requestInvalidateHeights<S: Sequence>(for identifiers: S) where S.Element: Hashable {

@@ -26,10 +26,7 @@ public extension ListView {
             origin: .init(x: offset.x, y: offset.y - topInset),
             size: bounds.size
         )
-        return layoutCache.allFrames()
-            .filter { $0.value.intersects(visibleRect) }
-            .map(\.key)
-            .sorted()
+        return layoutCache.indices(intersecting: visibleRect)
     }
 
     func invaliateLayout() {
