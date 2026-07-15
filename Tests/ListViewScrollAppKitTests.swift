@@ -117,6 +117,17 @@ struct ListViewScrollAppKitTests {
     }
 
     @Test
+    func verticalScrollerStaysAboveVisibleRows() throws {
+        let context = makeListView()
+        let listView = context.listView
+        let scrollerContainer = try #require(listView.subviews.first { view in
+            view.subviews.contains { $0 is NSScroller }
+        })
+
+        #expect(listView.subviews.last === scrollerContainer)
+    }
+
+    @Test
     func rowPositionsRespectVisibleInsets() {
         let context = makeListView()
         let listView = context.listView
@@ -350,6 +361,25 @@ struct ListViewScrollAppKitTests {
 
         listView.contentOffset.y = bottom + 10
         #expect(listView.isScrolledToBottom())
+    }
+
+    @Test
+    func insertionAnimationsAreNotDisabledByShiftedIndices() throws {
+        let listView = ListView(frame: CGRect(x: 0, y: 0, width: 200, height: 400))
+        let adapter = FixedHeightListAdapter()
+        let dataSource = ListViewDiffableDataSource<ScrollItem>(listView: listView)
+        listView.adapter = adapter
+        dataSource.applySnapshot(using: (0 ..< 3).map { ScrollItem(id: $0) })
+        listView.layoutSubtreeIfNeeded()
+
+        var snapshot = dataSource.snapshot()
+        snapshot.insert(ScrollItem(id: 99), at: 0)
+        dataSource.applySnapshot(snapshot, animatingDifferences: true)
+
+        let insertedRow = try #require(listView.rowView(at: 0))
+        let shiftedRow = try #require(listView.rowView(at: 1))
+        #expect(insertedRow.layer?.animationKeys()?.isEmpty == false)
+        #expect(shiftedRow.layer?.animationKeys()?.isEmpty == false)
     }
 
     @Test
