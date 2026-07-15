@@ -188,9 +188,12 @@ import SpringInterpolation
         /// Delta is always applied to this value; rubber-band is applied only for display.
         private var _trackingRawOffsetY: CGFloat = 0
 
-        /// True when spring is animating a bounce-back from overscroll.
-        /// During bounce, all system momentum events are consumed (ignored).
+        /// True while the spring is animating an overscroll back into bounds.
         private var _isBouncing: Bool = false
+
+        /// True while momentum events from a gesture handed off to the spring
+        /// must be consumed to keep the two animation systems from competing.
+        private var _ignoresMomentumEvents: Bool = false
 
         /// Estimated visual scroll velocity (points/sec) for spring handoff.
         private var _scrollVelocityY: CGFloat = 0
@@ -284,19 +287,22 @@ import SpringInterpolation
             let max = maximumContentOffset
             let isDiscreteWheelEvent = event.phase.isEmpty && event.momentumPhase.isEmpty
 
-            // During bounce-back, eat all system momentum events.
-            // A new direct touch or a phase-less mouse wheel event can interrupt.
-            if _isBouncing {
+            // The spring owns deceleration after an overscroll handoff. Keep
+            // consuming momentum from that gesture even if the spring finishes
+            // before AppKit emits the terminal momentum event.
+            if _ignoresMomentumEvents, !event.momentumPhase.isEmpty {
                 if event.momentumPhase == .ended || event.momentumPhase == .cancelled {
-                    // Momentum sequence is fully over, safe to clear.
-                    _isBouncing = false
-                    return
+                    _ignoresMomentumEvents = false
                 }
-                if event.momentumPhase != [] {
-                    return
-                }
+                return
+            }
+
+            // A new direct touch or phase-less wheel event interrupts the spring
+            // and starts a fresh interaction.
+            if _isBouncing {
                 if event.phase == .began || isDiscreteWheelEvent {
                     _isBouncing = false
+                    _ignoresMomentumEvents = false
                     // fall through to normal began handling
                 } else {
                     return
@@ -307,6 +313,7 @@ import SpringInterpolation
                 // Full reset: kill any in-flight animation and clear all tracking state.
                 _isTracking = true
                 _isBouncing = false
+                _ignoresMomentumEvents = false
                 cancelCurrentScrolling()
                 // Initialize raw offset from current visual position.
                 // If out of bounds (e.g. grabbed during bounce-back animation),
@@ -366,10 +373,11 @@ import SpringInterpolation
             // Finger lifted while out of bounds → immediately bounce back with velocity.
             // Do NOT wait for momentum — the spring handles deceleration + return as one motion.
             if event.phase == .ended || event.phase == .cancelled {
+                _isTracking = false
                 let clamped = nearestScrollLocationInBounds(offset: contentOffset)
                 if clamped != contentOffset {
-                    _isTracking = false
                     _isBouncing = true
+                    _ignoresMomentumEvents = true
                     let target = clamped
                     scrollingContext.setCurrent(
                         .init(x: contentOffset.x, y: contentOffset.y),
@@ -454,8 +462,9 @@ import SpringInterpolation
                 vel: .init(x: 0, y: 0)
             )
             scrollingTarget = nil
-            // Do NOT clear _isBouncing here — the system may still be sending
-            // momentum events that must be eaten. Only scrollWheel clears it.
+            _isBouncing = false
+            // Do not clear _ignoresMomentumEvents here. AppKit may still be
+            // sending momentum from the gesture that handed off to the spring.
             scrollingContext.setTarget(.init(x: currentContentOffset.x, y: currentContentOffset.y))
             scrollingDisplayLink?.delegatingObject(nil)
             scrollingDisplayLink = nil
