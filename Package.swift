@@ -28,5 +28,9 @@ let package = Package(
                 "MSDisplayLink",
             ]
         ),
+        .testTarget(
+            name: "ListViewKitTests",
+            dependencies: ["ListViewKit"]
+        ),
     ]
 )

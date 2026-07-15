@@ -282,9 +282,10 @@ import SpringInterpolation
         override open func scrollWheel(with event: NSEvent) {
             let min = minimumContentOffset
             let max = maximumContentOffset
+            let isDiscreteWheelEvent = event.phase.isEmpty && event.momentumPhase.isEmpty
 
             // During bounce-back, eat all system momentum events.
-            // Only a new direct touch (phase.began) can interrupt.
+            // A new direct touch or a phase-less mouse wheel event can interrupt.
             if _isBouncing {
                 if event.momentumPhase == .ended || event.momentumPhase == .cancelled {
                     // Momentum sequence is fully over, safe to clear.
@@ -294,7 +295,7 @@ import SpringInterpolation
                 if event.momentumPhase != [] {
                     return
                 }
-                if event.phase == .began {
+                if event.phase == .began || isDiscreteWheelEvent {
                     _isBouncing = false
                     // fall through to normal began handling
                 } else {
@@ -302,7 +303,7 @@ import SpringInterpolation
                 }
             }
 
-            if event.phase == .began || event.momentumPhase == .began {
+            if event.phase == .began || event.momentumPhase == .began || isDiscreteWheelEvent {
                 // Full reset: kill any in-flight animation and clear all tracking state.
                 _isTracking = true
                 _isBouncing = false
@@ -349,6 +350,18 @@ import SpringInterpolation
             _prevScrollTime = now
 
             setContentOffset(.init(x: contentOffset.x, y: visualY), animated: false)
+
+            // Traditional mouse wheels do not report gesture phases. Treat every
+            // event as a complete interaction so the next delta starts from the
+            // current offset and programmatic scrolling is never left blocked.
+            if isDiscreteWheelEvent {
+                _isTracking = false
+                let clamped = nearestScrollLocationInBounds(offset: contentOffset)
+                if clamped != contentOffset {
+                    scroll(to: clamped, preserveVelocity: false)
+                }
+                return
+            }
 
             // Finger lifted while out of bounds → immediately bounce back with velocity.
             // Do NOT wait for momentum — the spring handles deceleration + return as one motion.
