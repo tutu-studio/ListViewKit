@@ -28,39 +28,53 @@ public extension ListView {
 
     /// Scrolls through the list view until a row that an index path identifies is at a particular location on the screen.
     func scrollToRow(at index: Int, at scrollPosition: ScrollPosition, animated: Bool = true) {
+        guard index >= 0,
+              let itemCount = dataSource?.numberOfItems(in: self),
+              index < itemCount
+        else {
+            return
+        }
+
         let targetRect = rectForRow(at: index)
+        let insets = adjustedContentInset
+        let visibleMinY = contentOffset.y + insets.top
+        let visibleHeight = max(0, bounds.height - insets.top - insets.bottom)
+        let visibleMaxY = visibleMinY + visibleHeight
         let targetContentOffsetY: CGFloat = {
             switch scrollPosition {
             case .none:
-                let visibleRect = CGRect(origin: contentOffset, size: bounds.size)
-                if targetRect.height > visibleRect.height {
-                    return targetRect.minY
+                if targetRect.height > visibleHeight {
+                    return targetRect.minY - insets.top
                 }
 
-                if visibleRect.contains(targetRect) {
-                    // The `targetRect` is already visible.
+                if targetRect.minY >= visibleMinY, targetRect.maxY <= visibleMaxY {
+                    // The `targetRect` is already fully visible.
                     return contentOffset.y
                 }
 
-                return if targetRect.minY < visibleRect.minY {
-                    // The `targetRect` is above `visibleRect`
-                    targetRect.minY
+                return if targetRect.minY < visibleMinY {
+                    // The `targetRect` is above the visible content area.
+                    targetRect.minY - insets.top
                 } else {
-                    // The `targetRect` is below `visibleRect`
-                    targetRect.maxY - bounds.height
+                    // The `targetRect` is below the visible content area.
+                    targetRect.maxY - bounds.height + insets.bottom
                 }
             case .top:
-                return targetRect.minY
+                return targetRect.minY - insets.top
             case .middle:
-                return targetRect.midY - bounds.midY
+                return targetRect.midY - insets.top - visibleHeight / 2
             case .bottom:
-                return targetRect.maxY - bounds.height
+                return targetRect.maxY - bounds.height + insets.bottom
             }
         }()
+        let targetOffset = nearestScrollLocationInBounds(offset: CGPoint(
+            x: contentOffset.x,
+            y: targetContentOffsetY
+        ))
         if animated {
-            scroll(to: .init(x: 0, y: targetContentOffsetY))
+            scroll(to: targetOffset)
         } else {
-            setContentOffset(.init(x: 0, y: targetContentOffsetY), animated: false)
+            setContentOffset(targetOffset, animated: false)
         }
     }
 }
