@@ -41,7 +41,7 @@ import SpringInterpolation
                 guard super.contentSize != newValue else { return }
                 let currentOffset = contentOffset
                 super.contentSize = newValue
-                setContentOffset(currentOffset, animated: false)
+                applyContentOffset(currentOffset)
                 let clampedOffset = nearestScrollLocationInBounds(offset: currentOffset)
                 let clampedTarget = scrollingTarget.map { nearestScrollLocationInBounds(offset: $0) }
                 if clampedOffset != currentOffset {
@@ -145,11 +145,19 @@ import SpringInterpolation
                 x: scrollingContext.x.value,
                 y: scrollingContext.y.value
             ))
-            setContentOffset(loc, animated: false)
+            applyContentOffset(loc)
         }
 
         override open func setContentOffset(_ contentOffset: CGPoint, animated: Bool) {
-            assert(!animated)
+            if animated {
+                scroll(to: contentOffset)
+            } else {
+                cancelCurrentScrolling()
+                applyContentOffset(contentOffset)
+            }
+        }
+
+        private func applyContentOffset(_ contentOffset: CGPoint) {
             super.setContentOffset(contentOffset, animated: false)
         }
     }
@@ -237,7 +245,7 @@ import SpringInterpolation
                 guard _contentSize != newValue else { return }
                 let currentOffset = contentOffset
                 _contentSize = newValue
-                setContentOffset(currentOffset, animated: false)
+                applyContentOffset(currentOffset)
                 let clampedOffset = nearestScrollLocationInBounds(offset: currentOffset)
                 let clampedTarget = scrollingTarget.map { nearestScrollLocationInBounds(offset: $0) }
                 if clampedOffset != currentOffset {
@@ -356,7 +364,7 @@ import SpringInterpolation
             }
             _prevScrollTime = now
 
-            setContentOffset(.init(x: contentOffset.x, y: visualY), animated: false)
+            applyContentOffset(.init(x: contentOffset.x, y: visualY))
 
             // Traditional mouse wheels do not report gesture phases. Treat every
             // event as a complete interaction so the next delta starts from the
@@ -484,11 +492,19 @@ import SpringInterpolation
                 x: scrollingContext.x.value,
                 y: scrollingContext.y.value
             )
-            setContentOffset(loc, animated: false)
+            applyContentOffset(loc)
         }
 
         open func setContentOffset(_ contentOffset: CGPoint, animated: Bool) {
-            assert(!animated)
+            if animated {
+                scroll(to: contentOffset)
+            } else {
+                cancelCurrentScrolling()
+                applyContentOffset(contentOffset)
+            }
+        }
+
+        private func applyContentOffset(_ contentOffset: CGPoint) {
             self.contentOffset = contentOffset
         }
     }

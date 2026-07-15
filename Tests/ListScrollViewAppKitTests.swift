@@ -61,6 +61,30 @@ struct ListScrollViewAppKitTests {
     }
 
     @Test
+    func animatedContentOffsetUsesSpringScrolling() {
+        let scrollView = ListScrollView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        scrollView.contentSize = CGSize(width: 200, height: 2_000)
+
+        scrollView.setContentOffset(CGPoint(x: 0, y: 800), animated: true)
+
+        #expect(scrollView.scrollingDisplayLink != nil)
+        scrollView.cancelCurrentScrolling()
+    }
+
+    @Test
+    func immediateContentOffsetCancelsSpringScrolling() {
+        let scrollView = ListScrollView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        scrollView.contentSize = CGSize(width: 200, height: 2_000)
+        scrollView.scroll(to: CGPoint(x: 0, y: 800), preserveVelocity: false)
+        #expect(scrollView.scrollingDisplayLink != nil)
+
+        scrollView.setContentOffset(CGPoint(x: 0, y: 300), animated: false)
+
+        #expect(scrollView.scrollingDisplayLink == nil)
+        #expect(scrollView.contentOffset == CGPoint(x: 0, y: 300))
+    }
+
+    @Test
     func bounceHandoffContinuesIgnoringSystemMomentumAfterCancellation() throws {
         let scrollView = ListScrollView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
         scrollView.contentSize = CGSize(width: 200, height: 2_000)
