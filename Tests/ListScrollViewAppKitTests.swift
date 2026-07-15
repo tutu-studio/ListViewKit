@@ -52,9 +52,10 @@ struct ListScrollViewAppKitTests {
         scrollView.contentOffset = CGPoint(x: 0, y: 500)
 
         scrollView.scrollWheel(with: try makeWheelEvent(deltaY: 1, phase: .began))
+        #expect(scrollView.isUserInteractingWithScroll)
         scrollView.scrollWheel(with: try makeWheelEvent(deltaY: 0, phase: .ended))
 
-        #expect(!scrollView.isTracking)
+        #expect(!scrollView.isUserInteractingWithScroll)
         scrollView.scroll(to: CGPoint(x: 0, y: 800), preserveVelocity: false)
         #expect(scrollView.scrollingDisplayLink != nil)
         scrollView.cancelCurrentScrolling()

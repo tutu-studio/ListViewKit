@@ -518,3 +518,28 @@ import SpringInterpolation
 #else
     #error("ListViewKit requires UIKit or AppKit")
 #endif
+
+public extension ListScrollView {
+    /// Whether direct user scrolling or platform momentum is currently active.
+    ///
+    /// Consumers can use this to avoid retargeting programmatic scrolling while
+    /// the user is inspecting earlier content. Programmatic spring scrolling is
+    /// intentionally not reported as user interaction.
+    var isUserInteractingWithScroll: Bool {
+        #if canImport(UIKit)
+            isTracking || isDragging || isDecelerating
+        #elseif canImport(AppKit)
+            isTracking
+        #endif
+    }
+
+    /// Returns whether the vertical offset is at the bottom edge, allowing a
+    /// small tolerance for fractional layout and display-scale differences.
+    ///
+    /// Bottom overscroll also returns `true`. A negative or non-finite
+    /// tolerance is treated as zero.
+    func isScrolledToBottom(tolerance: CGFloat = 1) -> Bool {
+        let normalizedTolerance = tolerance.isFinite ? max(0, tolerance) : 0
+        return maximumContentOffset.y - contentOffset.y <= normalizedTolerance
+    }
+}

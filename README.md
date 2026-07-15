@@ -101,6 +101,17 @@ dataSource.applySnapshot(snapshot, animatingDifferences: true)
 Items must have unique, stable identifiers. Changing an item's hashable value
 causes visible content and cached height to be refreshed.
 
+For a high-frequency change to one existing item, avoid rebuilding and diffing
+a complete snapshot:
+
+```swift
+message.text += delta
+dataSource.updateItem(message)
+```
+
+`updateItem(_:)` reconfigures and remeasures only that identifier. Insertions,
+removals, and reorders should continue to use snapshots.
+
 ### Prepare rows for configuration
 
 Override `prepareForReuse()` to clear transient state such as text, images,
@@ -118,6 +129,37 @@ override func prepareForReuse() {
 ListViewKit calls this method before every row configuration, including the
 initial configuration and reconfiguration of an existing visible item. The
 implementation should therefore be idempotent.
+
+### Invalidate a self-sizing row
+
+When hosted or expandable content changes size without changing its data-source
+item, invalidate that row by item identifier. ListViewKit re-runs only that
+row's height closure and keeps the other identity-based height measurements:
+
+```swift
+listView.invalidateLayout(forRowWithID: message.id)
+```
+
+Use `invalidateLayout()` only when every cached height may have changed, such
+as after replacing global typography metrics. The misspelled legacy
+`invaliateLayout()` API remains available as a deprecated compatibility shim.
+
+### Follow streaming content
+
+Chat-style clients can capture bottom affinity before applying a snapshot or
+invalidating a growing row:
+
+```swift
+let shouldFollow = listView.isScrolledToBottom(tolerance: 4)
+dataSource.applySnapshot(snapshot)
+
+if shouldFollow && !listView.isUserInteractingWithScroll {
+    listView.setContentOffset(listView.maximumContentOffset, animated: false)
+}
+```
+
+`isUserInteractingWithScroll` includes platform momentum but excludes
+programmatic spring scrolling.
 
 ### Scroll to a row
 

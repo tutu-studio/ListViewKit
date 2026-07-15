@@ -5,6 +5,7 @@ import ListViewKit
 
 private struct BenchmarkItem: Identifiable, Hashable {
     let id: Int
+    var revision = 0
 }
 
 @MainActor
@@ -12,6 +13,8 @@ private final class BenchmarkAdapter: ListViewAdapter {
     enum RowKind: Hashable {
         case row
     }
+
+    var heightOverrides: [Int: CGFloat] = [:]
 
     func listView(_: ListView, rowKindFor _: ItemType, at _: Int) -> ListViewAdapter.RowKind {
         RowKind.row
@@ -21,8 +24,9 @@ private final class BenchmarkAdapter: ListViewAdapter {
         ListRowView()
     }
 
-    func listView(_: ListView, heightFor _: ItemType, at _: Int) -> CGFloat {
-        44
+    func listView(_: ListView, heightFor item: ItemType, at _: Int) -> CGFloat {
+        let item = item as! BenchmarkItem
+        return heightOverrides[item.id, default: 44]
     }
 
     func listView(_: ListView, configureRowView _: ListRowView, for _: ItemType, at _: Int) {}
@@ -41,6 +45,7 @@ private struct ListViewKitBenchmarks {
     private static let sampleCount = 3
     private static let visibleQueryCount = 20_000
     private static let scrollLayoutCount = 1_000
+    private static let tailHeightUpdateCount = 1_000
 
     static func main() {
         let warmupContext = makeContext(itemCount: 100)
@@ -50,8 +55,8 @@ private struct ListViewKitBenchmarks {
         print("ListViewKit runtime benchmark")
         print("Release configuration; fixed 44pt rows; 800×600 viewport")
         print("")
-        print("| Items | Initial layout | 20k visible queries | Per query | 1k scroll layouts |")
-        print("| ---: | ---: | ---: | ---: | ---: |")
+        print("| Items | Initial layout | 20k visible queries | Per query | 1k scroll layouts | 1k tail item updates |")
+        print("| ---: | ---: | ---: | ---: | ---: | ---: |")
 
         for itemCount in itemCounts {
             var context: Context?
@@ -75,16 +80,23 @@ private struct ListViewKitBenchmarks {
                     runScrollLayouts(in: context.listView, count: scrollLayoutCount)
                 }.1
             }
+            let heightUpdateSamples = (0 ..< sampleCount).map { _ in
+                measure {
+                    runTailHeightUpdates(in: context, count: tailHeightUpdateCount)
+                }.1
+            }
             let initialMilliseconds = median(initialSamples)
             let visibleMilliseconds = median(visibleSamples)
             let layoutMilliseconds = median(layoutSamples)
+            let heightUpdateMilliseconds = median(heightUpdateSamples)
             let microsecondsPerQuery = visibleMilliseconds * 1_000 / Double(visibleQueryCount)
 
             print(
                 "| \(itemCount) | \(format(initialMilliseconds)) ms "
                     + "| \(format(visibleMilliseconds)) ms "
                     + "| \(format(microsecondsPerQuery)) µs "
-                    + "| \(format(layoutMilliseconds)) ms |"
+                    + "| \(format(layoutMilliseconds)) ms "
+                    + "| \(format(heightUpdateMilliseconds)) ms |"
             )
             withExtendedLifetime(context) {}
         }
@@ -97,7 +109,7 @@ private struct ListViewKitBenchmarks {
         listView.adapter = adapter
 
         dataSource.applySnapshot(
-            using: (0 ..< itemCount).map(BenchmarkItem.init(id:)),
+            using: (0 ..< itemCount).map { BenchmarkItem(id: $0) },
             animatingDifferences: false
         )
         listView.needsLayout = true
@@ -126,6 +138,22 @@ private struct ListViewKitBenchmarks {
             visibleRowCount &+= listView.visibleRowViews.count
         }
         return visibleRowCount
+    }
+
+    private static func runTailHeightUpdates(in context: Context, count: Int) -> CGFloat {
+        let itemID = max(0, context.dataSource.snapshot().count - 1)
+        context.listView.setContentOffset(context.listView.minimumContentOffset, animated: false)
+        var checksum: CGFloat = 0
+        for iteration in 0 ..< count {
+            context.adapter.heightOverrides[itemID] = 44 + CGFloat(iteration % 120)
+            _ = context.dataSource.updateItem(BenchmarkItem(
+                id: itemID,
+                revision: iteration + 1
+            ))
+            context.listView.layoutSubtreeIfNeeded()
+            checksum += context.listView.contentSize.height
+        }
+        return checksum
     }
 
     private static func measure<Result>(_ operation: () -> Result) -> (Result, Double) {

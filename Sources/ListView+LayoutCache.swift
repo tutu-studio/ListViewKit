@@ -62,14 +62,12 @@ extension ListView {
                 validIdentifiers.insert(key)
                 guard heightCache[key] == nil else { continue }
                 guard let item = dataSource.item(at: index, in: listView) else { continue }
-                let measuredHeight = adapter.listView(listView, heightFor: item, at: index)
-                assert(
-                    measuredHeight.isFinite && measuredHeight >= 0,
-                    "Row heights must be finite and nonnegative."
+                heightCache[key] = measuredHeight(
+                    adapter: adapter,
+                    item: item,
+                    index: index,
+                    listView: listView
                 )
-                heightCache[key] = measuredHeight.isFinite
-                    ? ceil(max(0, measuredHeight))
-                    : 0
             }
             let staleIdentifiers = heightCache.keys.filter {
                 !validIdentifiers.contains($0)
@@ -81,11 +79,28 @@ extension ListView {
             contentHeightCache = rebuildFrame(listView: listView, count: count)
         }
 
-        func rebuildFrame(listView: ListView, count: Int) -> CGFloat {
+        func rebuildFrame(
+            listView: ListView,
+            count: Int,
+            startingAt requestedStartIndex: Int = 0
+        ) -> CGFloat {
             let contentWidth = listView.bounds.width
-            var usedHeight: CGFloat = 0
-            frameCache.removeAll(keepingCapacity: true)
-            for index in 0 ..< count {
+            let startIndex = min(max(0, requestedStartIndex), count)
+            let prefixHeight: CGFloat
+            if startIndex == 0 {
+                prefixHeight = 0
+                frameCache.removeAll(keepingCapacity: true)
+            } else if let precedingFrame = frameCache[startIndex - 1] {
+                prefixHeight = precedingFrame.maxY
+                for index in startIndex ..< count {
+                    frameCache.removeValue(forKey: index)
+                }
+            } else {
+                return rebuildFrame(listView: listView, count: count)
+            }
+
+            var usedHeight = prefixHeight
+            for index in startIndex ..< count {
                 guard let key = identifier(for: index) else { continue }
                 let height = heightCache[key] ?? 0
                 let frame = CGRect(x: 0, y: usedHeight, width: contentWidth, height: height)
@@ -93,6 +108,65 @@ extension ListView {
                 usedHeight += height
             }
             return usedHeight
+        }
+
+        /// Re-measures known rows against an otherwise valid cache and rebuilds
+        /// frames only from the earliest affected index. Returns `false` when
+        /// structural changes require the normal reconciliation path.
+        func invalidateHeights<S: Sequence>(for identifiers: S) -> Bool
+            where S.Element: Hashable
+        {
+            guard let listView,
+                  let adapter = listView.adapter,
+                  let dataSource = listView.dataSource,
+                  contentHeightCache != nil,
+                  !isCacheInvalid
+            else {
+                return false
+            }
+
+            var affected: [(key: AnyHashable, index: Int, item: any Identifiable)] = []
+            var seen: Set<AnyHashable> = []
+            for identifier in identifiers {
+                let key = AnyHashable(identifier)
+                guard seen.insert(key).inserted else { continue }
+                guard let index = dataSource.itemIndex(for: identifier, in: listView),
+                      let item = dataSource.item(at: index, in: listView)
+                else {
+                    return false
+                }
+                affected.append((key, index, item))
+            }
+            guard let firstIndex = affected.map(\.index).min() else { return true }
+
+            for entry in affected {
+                heightCache[entry.key] = measuredHeight(
+                    adapter: adapter,
+                    item: entry.item,
+                    index: entry.index,
+                    listView: listView
+                )
+            }
+            contentHeightCache = rebuildFrame(
+                listView: listView,
+                count: numberOfItems,
+                startingAt: firstIndex
+            )
+            return true
+        }
+
+        private func measuredHeight(
+            adapter: any ListViewAdapter,
+            item: any Identifiable,
+            index: Int,
+            listView: ListView
+        ) -> CGFloat {
+            let measuredHeight = adapter.listView(listView, heightFor: item, at: index)
+            assert(
+                measuredHeight.isFinite && measuredHeight >= 0,
+                "Row heights must be finite and nonnegative."
+            )
+            return measuredHeight.isFinite ? ceil(max(0, measuredHeight)) : 0
         }
 
         func identifier(for index: Int) -> AnyHashable? {
@@ -158,6 +232,7 @@ extension ListView {
             for identifier in identifiers {
                 erasedIdentifiers.append(AnyHashable(identifier))
             }
+            guard !erasedIdentifiers.isEmpty else { return }
             contentHeightCache = nil
             for identifier in erasedIdentifiers {
                 heightCache.removeValue(forKey: identifier)
@@ -173,7 +248,9 @@ extension ListView {
         }
 
         func finalizeInvalidationRequests() {
-            rebuild()
+            if contentHeightCache == nil || isCacheInvalid {
+                rebuild()
+            }
         }
 
         func invalidateAll() {
