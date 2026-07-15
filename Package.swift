@@ -26,11 +26,18 @@ let package = Package(
                 .product(name: "OrderedCollections", package: "swift-collections"),
                 "SpringInterpolation",
                 "MSDisplayLink",
-            ]
+            ],
+            path: "Sources"
         ),
         .testTarget(
             name: "ListViewKitTests",
             dependencies: ["ListViewKit"]
+        ),
+        .executableTarget(
+            name: "ListViewKitBenchmarks",
+            dependencies: ["ListViewKit"],
+            path: "Benchmarks",
+            exclude: ["README.md"]
         ),
     ]
 )
