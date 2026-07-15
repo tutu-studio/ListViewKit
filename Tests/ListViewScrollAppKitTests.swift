@@ -24,6 +24,37 @@ private final class FixedHeightListAdapter: ListViewAdapter {
     func listView(_: ListView, configureRowView _: ListRowView, for _: ItemType, at _: Int) {}
 }
 
+@MainActor
+private final class LayoutCountingRow: ListRowView {
+    var layoutCount = 0
+
+    override func layout() {
+        super.layout()
+        layoutCount += 1
+    }
+}
+
+@MainActor
+private final class LayoutCountingAdapter: ListViewAdapter {
+    enum RowKind: Hashable {
+        case row
+    }
+
+    func listView(_: ListView, rowKindFor _: ItemType, at _: Int) -> ListViewAdapter.RowKind {
+        RowKind.row
+    }
+
+    func listViewMakeRow(for _: ListViewAdapter.RowKind) -> ListRowView {
+        LayoutCountingRow()
+    }
+
+    func listView(_: ListView, heightFor _: ItemType, at _: Int) -> CGFloat {
+        100
+    }
+
+    func listView(_: ListView, configureRowView _: ListRowView, for _: ItemType, at _: Int) {}
+}
+
 private struct ScrollItem: Identifiable, Hashable {
     let id: Int
 }
@@ -103,6 +134,33 @@ struct ListViewScrollAppKitTests {
         listView.topInset = 40
         listView.contentOffset.y = 540
         #expect(listView.indicesForVisibleRows == [5, 6])
+    }
+
+    @Test
+    func scrollingDoesNotRelayoutRowsWithUnchangedFrames() throws {
+        let listView = ListView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        let adapter = LayoutCountingAdapter()
+        let dataSource = ListViewDiffableDataSource<ScrollItem>(listView: listView)
+        listView.adapter = adapter
+
+        var snapshot = dataSource.snapshot()
+        for index in 0 ..< 20 {
+            snapshot.append(ScrollItem(id: index))
+        }
+        dataSource.applySnapshot(snapshot)
+        listView.needsLayout = true
+        listView.layoutSubtreeIfNeeded()
+
+        let firstRow = try #require(listView.rowView(at: 0) as? LayoutCountingRow)
+        firstRow.layoutSubtreeIfNeeded()
+        firstRow.layoutCount = 0
+        firstRow.needsLayout = false
+
+        listView.contentOffset.y = 10
+        listView.layoutSubtreeIfNeeded()
+
+        #expect(listView.rowView(at: 0) === firstRow)
+        #expect(firstRow.layoutCount == 0)
     }
 
     @Test

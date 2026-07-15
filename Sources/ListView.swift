@@ -109,12 +109,7 @@ open class ListView: ListScrollView {
 
         prepareVisibleRows()
         for (id, rowView) in visibleRows {
-            rowView.frame = rectForRow(with: id)
-            #if canImport(UIKit)
-                rowView.setNeedsLayout()
-            #elseif canImport(AppKit)
-                rowView.needsLayout = true
-            #endif
+            updateFrame(of: rowView, to: rectForRow(with: id))
         }
 
         #if DEBUG
@@ -139,15 +134,22 @@ open class ListView: ListScrollView {
         contentSize = supposedContentSize
 
         for (id, rowView) in visibleRows {
-            rowView.frame = rectForRow(with: id)
-            #if canImport(UIKit)
-                rowView.setNeedsLayout()
-            #elseif canImport(AppKit)
-                rowView.needsLayout = true
-            #endif
+            updateFrame(of: rowView, to: rectForRow(with: id))
         }
 
         removeUnusedRowsFromSuperview()
+    }
+
+    private func updateFrame(of rowView: ListRowView, to targetFrame: CGRect) {
+        guard rowView.frame != targetFrame else { return }
+        let sizeChanged = rowView.frame.size != targetFrame.size
+        rowView.frame = targetFrame
+        guard sizeChanged else { return }
+        #if canImport(UIKit)
+            rowView.setNeedsLayout()
+        #elseif canImport(AppKit)
+            rowView.needsLayout = true
+        #endif
     }
 }
 
