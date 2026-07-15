@@ -203,6 +203,37 @@ struct ListViewScrollAppKitTests {
     }
 
     @Test
+    func rebuildingLayoutCacheRemovesStaleEntries() {
+        let context = makeListView()
+        let cache = context.listView.layoutCache
+        cache.heightCache[AnyHashable(999)] = 44
+        cache.frameCache[999] = CGRect(x: 0, y: 99_999, width: 200, height: 44)
+
+        cache.rebuild()
+
+        #expect(cache.heightCache[AnyHashable(999)] == nil)
+        #expect(cache.frameCache[999] == nil)
+        #expect(cache.heightCache.count == 20)
+        #expect(cache.frameCache.count == 20)
+        #expect(cache.contentHeight == 2_000)
+    }
+
+    @Test
+    func invalidatingHeightsSupportsSinglePassSequences() {
+        let context = makeListView()
+        let cache = context.listView.layoutCache
+        var iterator = [5].makeIterator()
+        let identifiers = AnySequence {
+            AnyIterator { iterator.next() }
+        }
+
+        cache.requestInvalidateHeights(for: identifiers)
+
+        #expect(cache.heightCache[AnyHashable(5)] == nil)
+        #expect(cache.frameCache[5] == nil)
+    }
+
+    @Test
     func invalidRowDoesNotChangeTheContentOffset() {
         let context = makeListView()
         let listView = context.listView
