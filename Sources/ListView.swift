@@ -28,6 +28,7 @@ open class ListView: ListScrollView {
     lazy var layoutCache: LayoutCache = .init(self)
     lazy var visibleRows: [AnyHashable: ListRowView] = [:]
     lazy var reusableRows: [AnyHashable: Reference<Deque<ListRowView>>] = [:]
+    var rowsPendingRemoval: [ListRowView] = []
 
     public var topInset: CGFloat = 0 {
         didSet {
@@ -273,13 +274,14 @@ extension ListView {
         rowView.rowKind = nil
         reusableDequeRef(for: kind)
             .modifying { $0.append(rowView) }
+        rowsPendingRemoval.append(rowView)
     }
 
     func removeUnusedRowsFromSuperview() {
-        for dequeRef in reusableRows.values {
-            for item in dequeRef.wrappedValue {
-                item.removeFromSuperview()
-            }
+        let pendingRows = rowsPendingRemoval
+        rowsPendingRemoval.removeAll(keepingCapacity: true)
+        for rowView in pendingRows where rowView.rowKind == nil {
+            rowView.removeFromSuperview()
         }
     }
 

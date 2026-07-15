@@ -27,10 +27,16 @@ private final class FixedHeightListAdapter: ListViewAdapter {
 @MainActor
 private final class LayoutCountingRow: ListRowView {
     var layoutCount = 0
+    var removalCount = 0
 
     override func layout() {
         super.layout()
         layoutCount += 1
+    }
+
+    override func removeFromSuperview() {
+        removalCount += 1
+        super.removeFromSuperview()
     }
 }
 
@@ -161,6 +167,39 @@ struct ListViewScrollAppKitTests {
 
         #expect(listView.rowView(at: 0) === firstRow)
         #expect(firstRow.layoutCount == 0)
+    }
+
+    @Test
+    func pooledRowsAreRemovedFromSuperviewOnlyOnce() throws {
+        let listView = ListView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        let adapter = LayoutCountingAdapter()
+        let dataSource = ListViewDiffableDataSource<ScrollItem>(listView: listView)
+        listView.adapter = adapter
+
+        var snapshot = dataSource.snapshot()
+        for index in 0 ..< 20 {
+            snapshot.append(ScrollItem(id: index))
+        }
+        dataSource.applySnapshot(snapshot)
+        listView.needsLayout = true
+        listView.layoutSubtreeIfNeeded()
+
+        listView.contentOffset.y = 50
+        listView.layoutSubtreeIfNeeded()
+        let initialRows = try listView.visibleRowViews.map {
+            try #require($0 as? LayoutCountingRow)
+        }
+        #expect(initialRows.count == 3)
+        initialRows.forEach { $0.removalCount = 0 }
+
+        listView.contentOffset.y = listView.maximumContentOffset.y
+        listView.layoutSubtreeIfNeeded()
+        let pooledRow = try #require(initialRows.first { $0.superview == nil })
+        #expect(pooledRow.removalCount == 1)
+
+        listView.needsLayout = true
+        listView.layoutSubtreeIfNeeded()
+        #expect(pooledRow.removalCount == 1)
     }
 
     @Test
