@@ -19,9 +19,9 @@ A lightweight, diffable, reusable list view for Swift, UIKit, and AppKit.
 ## Requirements
 
 - Swift 6.0+
-- iOS 13.0+
-- macCatalyst 13.0+
-- macOS 11.0+
+- iOS 17.0+
+- macCatalyst 17.0+
+- macOS 14.0+
 
 ## Installation
 
@@ -179,8 +179,8 @@ Run the Swift 6 test suite:
 swift test
 ```
 
-CI also builds the macOS example and the library for an iOS Simulator
-destination.
+CI also builds the macOS example and the library for iOS Simulator and
+Mac Catalyst destinations.
 
 ## Runtime benchmarks
 

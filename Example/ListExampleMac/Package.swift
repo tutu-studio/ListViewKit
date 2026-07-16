@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "ListExampleMac",
     platforms: [
-        .macOS(.v11),
+        .macOS(.v14),
     ],
     dependencies: [
         .package(path: "../.."),

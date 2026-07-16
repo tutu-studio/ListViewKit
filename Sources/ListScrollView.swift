@@ -113,9 +113,7 @@ import SpringInterpolation
 
             guard scrollingDisplayLink == nil else { return }
             scrollingDisplayLink = CADisplayLink(target: self, selector: #selector(handleScrollingAnimation(_:)))
-            if #available(iOS 15.0, macCatalyst 15.0, *) {
-                scrollingDisplayLink?.preferredFrameRateRange = .init(minimum: 80, maximum: 120, preferred: 120)
-            }
+            scrollingDisplayLink?.preferredFrameRateRange = .init(minimum: 80, maximum: 120, preferred: 120)
             scrollingTik = CACurrentMediaTime()
             scrollingDisplayLink?.add(to: .main, forMode: .common)
         }

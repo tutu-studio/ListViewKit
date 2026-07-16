@@ -6,9 +6,9 @@ import PackageDescription
 let package = Package(
     name: "ListViewKit",
     platforms: [
-        .iOS(.v13),
-        .macCatalyst(.v13),
-        .macOS(.v11),
+        .iOS(.v17),
+        .macCatalyst(.v17),
+        .macOS(.v14),
     ],
     products: [
         .library(name: "ListViewKit", targets: ["ListViewKit"]),
