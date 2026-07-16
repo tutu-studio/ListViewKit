@@ -41,7 +41,7 @@ import SpringInterpolation
                 guard super.contentSize != newValue else { return }
                 let currentOffset = contentOffset
                 super.contentSize = newValue
-                setContentOffset(currentOffset, animated: false)
+                applyContentOffset(currentOffset)
                 let clampedOffset = nearestScrollLocationInBounds(offset: currentOffset)
                 let clampedTarget = scrollingTarget.map { nearestScrollLocationInBounds(offset: $0) }
                 if clampedOffset != currentOffset {
@@ -113,9 +113,7 @@ import SpringInterpolation
 
             guard scrollingDisplayLink == nil else { return }
             scrollingDisplayLink = CADisplayLink(target: self, selector: #selector(handleScrollingAnimation(_:)))
-            if #available(iOS 15.0, macCatalyst 15.0, *) {
-                scrollingDisplayLink?.preferredFrameRateRange = .init(minimum: 80, maximum: 120, preferred: 120)
-            }
+            scrollingDisplayLink?.preferredFrameRateRange = .init(minimum: 80, maximum: 120, preferred: 120)
             scrollingTik = CACurrentMediaTime()
             scrollingDisplayLink?.add(to: .main, forMode: .common)
         }
@@ -145,11 +143,19 @@ import SpringInterpolation
                 x: scrollingContext.x.value,
                 y: scrollingContext.y.value
             ))
-            setContentOffset(loc, animated: false)
+            applyContentOffset(loc)
         }
 
         override open func setContentOffset(_ contentOffset: CGPoint, animated: Bool) {
-            assert(!animated)
+            if animated {
+                scroll(to: contentOffset)
+            } else {
+                cancelCurrentScrolling()
+                applyContentOffset(contentOffset)
+            }
+        }
+
+        private func applyContentOffset(_ contentOffset: CGPoint) {
             super.setContentOffset(contentOffset, animated: false)
         }
     }
@@ -157,6 +163,146 @@ import SpringInterpolation
 #elseif canImport(AppKit)
     import AppKit
     import MSDisplayLink
+
+    enum AppKitScrollPhysics {
+        // AppKit exports distinct hyperbolic coefficients for trackpads and
+        // touch input. macOS trackpad scrolling uses 0.075; 0.55 is the touch
+        // coefficient used by UIKit-style rubber banding.
+        static let rubberBandCoefficient: CGFloat = 0.075
+        static let reboundAmplitude: CGFloat = 0.31
+        static let reboundPeriod: TimeInterval = 1.6
+        static let reboundStiffness: CGFloat = 20
+        static let maximumReboundVelocity: CGFloat = 20_000
+
+        static func elasticDelta(forReboundDelta delta: CGFloat, dimension: CGFloat) -> CGFloat {
+            guard dimension > 0 else { return 0 }
+            let magnitude = abs(delta)
+            let elasticMagnitude = dimension * magnitude * rubberBandCoefficient
+                / (dimension + magnitude * rubberBandCoefficient)
+            return delta < 0 ? -elasticMagnitude : elasticMagnitude
+        }
+
+        static func reboundDelta(forElasticDelta delta: CGFloat, dimension: CGFloat) -> CGFloat {
+            guard dimension > 0 else { return 0 }
+            let magnitude = abs(delta)
+            guard magnitude < dimension else { return delta }
+            let reboundMagnitude = magnitude * dimension
+                / (rubberBandCoefficient * (dimension - magnitude))
+            return delta < 0 ? -reboundMagnitude : reboundMagnitude
+        }
+
+        /// Matches `_NSElasticDeltaForTimeDelta` without linking private SPI.
+        static func elasticDelta(
+            initialPosition: CGFloat,
+            initialVelocity: CGFloat,
+            elapsedTime: TimeInterval
+        ) -> CGFloat {
+            let clampedVelocity = min(
+                maximumReboundVelocity,
+                max(-maximumReboundVelocity, initialVelocity)
+            )
+            let decay = exp(-elapsedTime * reboundStiffness / reboundPeriod)
+            return (initialPosition - elapsedTime * clampedVelocity * reboundAmplitude) * decay
+        }
+
+        static func momentumDuration(initialVelocity: CGFloat) -> TimeInterval {
+            guard initialVelocity != 0 else { return 0 }
+            return cbrt(abs(initialVelocity) / 4_000)
+        }
+
+        static func momentumDisplacement(
+            initialVelocity: CGFloat,
+            elapsedTime: TimeInterval,
+            duration: TimeInterval
+        ) -> CGFloat {
+            guard duration > 0 else { return 0 }
+            let progress = min(1, max(0, elapsedTime / duration))
+            let remainingVelocityFraction = pow(1 - progress, 4)
+            return initialVelocity * duration / 4 * (1 - remainingVelocityFraction)
+        }
+
+        static func momentumVelocity(
+            initialVelocity: CGFloat,
+            elapsedTime: TimeInterval,
+            duration: TimeInterval
+        ) -> CGFloat {
+            guard duration > 0 else { return 0 }
+            let progress = min(1, max(0, elapsedTime / duration))
+            return initialVelocity * pow(1 - progress, 3)
+        }
+
+        static func roundToDevicePixelTowardZero(_ value: CGFloat) -> CGFloat {
+            var value = value
+            let roundedValue = round(value)
+            if abs(value - roundedValue) < 0.125 {
+                value = roundedValue
+            }
+            return value > 0 ? ceil(value - 0.5) : floor(value + 0.5)
+        }
+    }
+
+    private final class ListOverlayScroller: NSScroller {
+        weak var owner: ListScrollView?
+        weak var overlay: ListScrollerOverlay?
+
+        override class var isCompatibleWithOverlayScrollers: Bool {
+            self == ListOverlayScroller.self
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            owner?.verticalScrollerTrackingDidBegin()
+            overlay?.isHandlingScrollerInteraction = true
+            defer {
+                overlay?.isHandlingScrollerInteraction = false
+                owner?.verticalScrollerTrackingDidEnd()
+            }
+            super.mouseDown(with: event)
+        }
+    }
+
+    private final class ListScrollerDocumentView: NSView {
+        override var isFlipped: Bool { true }
+    }
+
+    private final class ListScrollerOverlay: NSScrollView {
+        weak var owner: ListScrollView?
+        var isSynchronizing = false
+        /// True only while NSScroller itself owns a mouse interaction. Wheel
+        /// observation must never feed the driver's private offset back into the list.
+        var isHandlingScrollerInteraction = false
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            guard !isHidden, let hitView = super.hitTest(point),
+                  let verticalScroller
+            else { return nil }
+            return hitView === verticalScroller || hitView.isDescendant(of: verticalScroller)
+                ? hitView
+                : nil
+        }
+
+        override func scrollWheel(with event: NSEvent) {
+            owner?.scrollWheel(with: event)
+        }
+
+        func observeScrollWheel(_ event: NSEvent) {
+            guard !isHidden else { return }
+            // AppKit needs the real event to drive overlay visibility and its
+            // native elastic knob. Driver offsets never flow back unless the
+            // user is directly interacting with NSScroller.
+            isSynchronizing = true
+            defer { isSynchronizing = false }
+            super.scrollWheel(with: event)
+        }
+
+        override func reflectScrolledClipView(_ clipView: NSClipView) {
+            super.reflectScrolledClipView(clipView)
+            guard clipView === contentView,
+                  !isSynchronizing,
+                  isHandlingScrollerInteraction
+            else { return }
+            owner?.nativeScrollerDidScroll(to: clipView.bounds.origin.y)
+        }
+    }
 
     open class ListScrollView: NSView {
         override open var isFlipped: Bool {
@@ -181,23 +327,60 @@ import SpringInterpolation
         /// Whether the user is currently interacting with scroll (trackpad/mouse).
         private var _isTracking: Bool = false
         var isTracking: Bool {
-            _isTracking
+            _isTracking || _momentumAnimation != nil || _isVerticalScrollerTracking
         }
 
         /// Raw (un-rubber-banded) Y offset during user scroll tracking.
         /// Delta is always applied to this value; rubber-band is applied only for display.
         private var _trackingRawOffsetY: CGFloat = 0
 
-        /// True when spring is animating a bounce-back from overscroll.
-        /// During bounce, all system momentum events are consumed (ignored).
+        /// True while AppKit-style overscroll rebound is active.
         private var _isBouncing: Bool = false
 
-        /// Estimated visual scroll velocity (points/sec) for spring handoff.
+        /// True while native momentum events are superseded by ListViewKit's
+        /// AppKit-matched momentum or rebound animation.
+        private var _ignoresMomentumEvents: Bool = false
+
+        /// Estimated raw scroll velocity (points/sec) for momentum and rebound handoff.
         private var _scrollVelocityY: CGFloat = 0
         private var _prevScrollTime: CFTimeInterval = 0
+        private var _lastVelocitySampleTime: CFTimeInterval = 0
+
+        private struct MomentumAnimation {
+            let initialOffset: CGPoint
+            let initialVelocityY: CGFloat
+            let duration: TimeInterval
+            var elapsedTime: TimeInterval = 0
+        }
+
+        private var _momentumAnimation: MomentumAnimation?
+
+        private struct RubberBandAnimation {
+            let targetOffset: CGPoint
+            let initialPositionY: CGFloat
+            let initialVelocityY: CGFloat
+            var elapsedTime: TimeInterval = 0
+        }
+
+        private var _rubberBandAnimation: RubberBandAnimation?
+
+        private let scrollerOverlay = ListScrollerOverlay(frame: .zero)
+        private let scrollerDocumentView = ListScrollerDocumentView(frame: .zero)
+        private var _isVerticalScrollerTracking = false
+
+        public var hasVerticalScroller: Bool = true {
+            didSet { updateVerticalScroller() }
+        }
+
+        public var autohidesScrollers: Bool = true {
+            didSet { updateVerticalScroller() }
+        }
 
         open var contentInsets: NSEdgeInsets = .init() {
-            didSet { needsLayout = true }
+            didSet {
+                needsLayout = true
+                updateVerticalScroller()
+            }
         }
 
         var alwaysBounceVertical: Bool = true
@@ -224,6 +407,7 @@ import SpringInterpolation
                 _contentOffset = newValue
                 setBoundsOrigin(newValue)
                 needsLayout = true
+                updateVerticalScroller(flash: true)
             }
         }
 
@@ -234,7 +418,8 @@ import SpringInterpolation
                 guard _contentSize != newValue else { return }
                 let currentOffset = contentOffset
                 _contentSize = newValue
-                setContentOffset(currentOffset, animated: false)
+                applyContentOffset(currentOffset)
+                updateVerticalScroller()
                 let clampedOffset = nearestScrollLocationInBounds(offset: currentOffset)
                 let clampedTarget = scrollingTarget.map { nearestScrollLocationInBounds(offset: $0) }
                 if clampedOffset != currentOffset {
@@ -255,11 +440,42 @@ import SpringInterpolation
         override public init(frame: CGRect) {
             super.init(frame: frame)
             wantsLayer = true
+
+            let verticalScroller = ListOverlayScroller(frame: .zero)
+            verticalScroller.owner = self
+            verticalScroller.overlay = scrollerOverlay
+            verticalScroller.scrollerStyle = .overlay
+            verticalScroller.controlSize = .regular
+
+            scrollerOverlay.owner = self
+            scrollerOverlay.borderType = .noBorder
+            scrollerOverlay.drawsBackground = false
+            scrollerOverlay.contentView.drawsBackground = false
+            scrollerOverlay.hasHorizontalScroller = false
+            scrollerOverlay.hasVerticalScroller = true
+            scrollerOverlay.verticalScrollElasticity = .allowed
+            scrollerOverlay.verticalScroller = verticalScroller
+            scrollerOverlay.scrollerStyle = .overlay
+            scrollerOverlay.autohidesScrollers = true
+            scrollerOverlay.documentView = scrollerDocumentView
+            addSubview(scrollerOverlay)
+            updateVerticalScroller()
         }
 
         @available(*, unavailable)
         public required init?(coder _: NSCoder) {
             fatalError()
+        }
+
+        override open func layout() {
+            super.layout()
+            updateVerticalScroller()
+        }
+
+        override open func didAddSubview(_ subview: NSView) {
+            super.didAddSubview(subview)
+            guard subview !== scrollerOverlay, scrollerOverlay.superview === self else { return }
+            addSubview(scrollerOverlay, positioned: .above, relativeTo: subview)
         }
 
         func isContentOffsetWithinBounds(offset: CGPoint) -> Bool {
@@ -279,33 +495,151 @@ import SpringInterpolation
             )
         }
 
+        private func updateVerticalScroller(flash: Bool = false) {
+            let minOffset = minimumContentOffset.y
+            let maxOffset = maximumContentOffset.y
+            let scrollableRange = maxOffset - minOffset
+            let canScroll = scrollableRange > 0 && bounds.height > 0
+            let shouldShowScroller = hasVerticalScroller && canScroll
+
+            // List updates may run inside an implicit AppKit animation context.
+            // The overlay is infrastructure, not list content: keep its geometry
+            // current even while hidden and never interpolate it into position.
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                context.allowsImplicitAnimation = false
+
+                scrollerOverlay.frame = bounds
+                scrollerOverlay.scrollerStyle = .overlay
+                scrollerOverlay.autohidesScrollers = shouldShowScroller
+                    ? autohidesScrollers
+                    : false
+                scrollerOverlay.hasVerticalScroller = true
+
+                // NSScrollView already applies its own safe area when tiling the
+                // scroller. Add only the remainder needed to protect overlay knob
+                // endpoints from rounded window corners; copying safeAreaInsets
+                // into scrollerInsets would count an underlapping titlebar twice.
+                let endpointInset = ceil(NSScroller.scrollerWidth(
+                    for: .regular,
+                    scrollerStyle: .overlay
+                ) / 2)
+                let overlaySafeAreaInsets = scrollerOverlay.safeAreaInsets
+                scrollerOverlay.scrollerInsets = NSEdgeInsets(
+                    top: max(0, endpointInset - overlaySafeAreaInsets.top),
+                    left: 0,
+                    bottom: max(0, endpointInset - overlaySafeAreaInsets.bottom),
+                    right: 0
+                )
+                scrollerOverlay.layoutSubtreeIfNeeded()
+
+                let viewportSize = scrollerOverlay.contentSize
+                scrollerDocumentView.frame = CGRect(
+                    origin: .zero,
+                    size: CGSize(
+                        width: max(1, viewportSize.width),
+                        height: shouldShowScroller
+                            ? max(viewportSize.height, scrollableRange + viewportSize.height)
+                            : viewportSize.height
+                    )
+                )
+                scrollerOverlay.tile()
+                scrollerOverlay.layoutSubtreeIfNeeded()
+
+                guard shouldShowScroller else {
+                    scrollerOverlay.isHidden = true
+                    return
+                }
+
+                let isOverscrolled = contentOffset.y < minOffset || contentOffset.y > maxOffset
+                if !isOverscrolled {
+                    let clampedOffset = min(max(contentOffset.y, minOffset), maxOffset)
+                    scrollerOverlay.isSynchronizing = true
+                    scrollerOverlay.contentView.scroll(to: .init(
+                        x: 0,
+                        y: clampedOffset - minOffset
+                    ))
+                    scrollerOverlay.reflectScrolledClipView(scrollerOverlay.contentView)
+                    scrollerOverlay.isSynchronizing = false
+                }
+
+                scrollerOverlay.isHidden = false
+                scrollerOverlay.tile()
+                scrollerOverlay.layoutSubtreeIfNeeded()
+            }
+
+            if flash, shouldShowScroller {
+                scrollerOverlay.flashScrollers()
+            }
+        }
+
+        fileprivate func verticalScrollerTrackingDidBegin() {
+            _isVerticalScrollerTracking = true
+            cancelCurrentScrolling()
+        }
+
+        fileprivate func verticalScrollerTrackingDidEnd() {
+            _isVerticalScrollerTracking = false
+        }
+
+        func nativeScrollerDidScroll(to offsetY: CGFloat) {
+            let targetOffsetY = minimumContentOffset.y + offsetY
+            setContentOffset(.init(
+                x: contentOffset.x,
+                y: min(max(targetOffsetY, minimumContentOffset.y), maximumContentOffset.y)
+            ), animated: false)
+        }
+
+        public func flashScrollers() {
+            guard !scrollerOverlay.isHidden else { return }
+            scrollerOverlay.flashScrollers()
+        }
+
         override open func scrollWheel(with event: NSEvent) {
+            scrollerOverlay.observeScrollWheel(event)
+
             let min = minimumContentOffset
             let max = maximumContentOffset
+            let isDiscreteWheelEvent = event.phase.isEmpty && event.momentumPhase.isEmpty
+            let hasDirectGesturePhase = !event.phase.isEmpty
+            let startsDirectInteraction = hasDirectGesturePhase && (
+                event.phase == .mayBegin
+                    || event.phase == .began
+                    || !_isTracking
+            )
 
-            // During bounce-back, eat all system momentum events.
-            // Only a new direct touch (phase.began) can interrupt.
-            if _isBouncing {
+            // A local momentum or rebound animation owns deceleration after handoff. Keep
+            // consuming native momentum from that gesture even if the animation finishes
+            // before AppKit emits the terminal momentum event.
+            if _ignoresMomentumEvents, !event.momentumPhase.isEmpty {
                 if event.momentumPhase == .ended || event.momentumPhase == .cancelled {
-                    // Momentum sequence is fully over, safe to clear.
-                    _isBouncing = false
-                    return
+                    _ignoresMomentumEvents = false
                 }
-                if event.momentumPhase != [] {
-                    return
-                }
-                if event.phase == .began {
+                return
+            }
+
+            // A new direct touch or phase-less wheel event interrupts the rebound
+            // and starts a fresh interaction.
+            if _isBouncing {
+                if startsDirectInteraction || isDiscreteWheelEvent {
                     _isBouncing = false
+                    // Keep consuming the previous gesture's native momentum tail.
+                    // Direct events are still processed because they have no momentum phase.
                     // fall through to normal began handling
                 } else {
                     return
                 }
             }
 
-            if event.phase == .began || event.momentumPhase == .began {
-                // Full reset: kill any in-flight animation and clear all tracking state.
+            if startsDirectInteraction || event.momentumPhase == .began || isDiscreteWheelEvent {
+                // AppKit may begin a new touch with .mayBegin, or resume with
+                // .changed while the previous momentum stream is still ending.
+                // Always rebase raw tracking on the current visual offset so a
+                // tiny follow-up gesture cannot jump back to the prior release point.
                 _isTracking = true
                 _isBouncing = false
+                // Do not clear _ignoresMomentumEvents here. AppKit can deliver the
+                // old momentum tail after a new direct touch has already started.
                 cancelCurrentScrolling()
                 // Initialize raw offset from current visual position.
                 // If out of bounds (e.g. grabbed during bounce-back animation),
@@ -321,10 +655,12 @@ import SpringInterpolation
                     _trackingRawOffsetY = currentY
                 }
                 _scrollVelocityY = 0
-                _prevScrollTime = CACurrentMediaTime()
+                _prevScrollTime = event.timestamp
+                _lastVelocitySampleTime = event.timestamp
             }
 
             let deltaY = event.scrollingDeltaY * (event.hasPreciseScrollingDeltas ? 1 : 10)
+            let previousRawOffsetY = _trackingRawOffsetY
             _trackingRawOffsetY -= deltaY
 
             // Apply rubber-band only for display
@@ -337,42 +673,60 @@ import SpringInterpolation
                 visualY = max.y + rubberBand(overscroll, dimension: bounds.height)
             }
 
-            // Track visual velocity for spring handoff.
-            // Only update when there is meaningful movement — the ended event
-            // often has deltaY ≈ 0 which would incorrectly zero out the velocity.
-            let now = CACurrentMediaTime()
+            // AppKit feeds the undamped gesture velocity into its snap-back
+            // curve. The ended event commonly carries a zero delta, so retain
+            // the last meaningful estimate rather than replacing it with zero.
+            let now = event.timestamp
             let dt = now - _prevScrollTime
-            let displacement = visualY - contentOffset.y
-            if dt > 0 && dt < 0.2 && abs(displacement) > 0.5 {
-                _scrollVelocityY = displacement / dt
+            let rawDisplacement = _trackingRawOffsetY - previousRawOffsetY
+            if dt > 0 && dt < 0.1 && abs(rawDisplacement) > 0.5 {
+                _scrollVelocityY = rawDisplacement / dt
+                _lastVelocitySampleTime = now
+            } else if now - _lastVelocitySampleTime >= 0.1 {
+                _scrollVelocityY = 0
             }
             _prevScrollTime = now
 
-            setContentOffset(.init(x: contentOffset.x, y: visualY), animated: false)
+            applyContentOffset(.init(x: contentOffset.x, y: visualY))
 
-            // Finger lifted while out of bounds → immediately bounce back with velocity.
-            // Do NOT wait for momentum — the spring handles deceleration + return as one motion.
-            if event.phase == .ended || event.phase == .cancelled {
+            // Once momentum carries the content past an edge, AppKit hands the
+            // remaining motion to its rebound curve and consumes subsequent
+            // momentum events from that gesture.
+            if !event.momentumPhase.isEmpty {
                 let clamped = nearestScrollLocationInBounds(offset: contentOffset)
                 if clamped != contentOffset {
-                    _isTracking = false
-                    _isBouncing = true
-                    let target = clamped
-                    scrollingContext.setCurrent(
-                        .init(x: contentOffset.x, y: contentOffset.y),
-                        vel: .init(x: 0, y: _scrollVelocityY)
-                    )
-                    scrollingContext.setTarget(.init(x: ceil(target.x), y: ceil(target.y)))
-                    scrollingTarget = target
-                    if scrollingDisplayLink == nil {
-                        let link = DisplayLink()
-                        link.delegatingObject(self)
-                        scrollingDisplayLink = link
-                        scrollingTik = CACurrentMediaTime()
-                    }
+                    _ignoresMomentumEvents = true
+                    startRubberBandAnimation(to: clamped, velocityY: _scrollVelocityY)
                     return
                 }
-                // Within bounds → let system momentum take over naturally
+            }
+
+            // Traditional mouse wheels do not report gesture phases. Treat every
+            // event as a complete interaction so the next delta starts from the
+            // current offset and programmatic scrolling is never left blocked.
+            if isDiscreteWheelEvent {
+                _isTracking = false
+                let clamped = nearestScrollLocationInBounds(offset: contentOffset)
+                if clamped != contentOffset {
+                    scroll(to: clamped, preserveVelocity: false)
+                }
+                return
+            }
+
+            // Finger lifted while out of bounds → immediately rebound with velocity.
+            // Do not wait for momentum; AppKit's decay curve owns the handoff.
+            if event.phase == .ended || event.phase == .cancelled {
+                _isTracking = false
+                let clamped = nearestScrollLocationInBounds(offset: contentOffset)
+                if clamped != contentOffset {
+                    _ignoresMomentumEvents = true
+                    startRubberBandAnimation(to: clamped, velocityY: _scrollVelocityY)
+                    return
+                }
+                if event.phase == .ended, startMomentumAnimation(velocityY: _scrollVelocityY) {
+                    return
+                }
+                // A cancelled gesture stops in place.
             }
 
             // Momentum ended while out of bounds (e.g. momentum carried past bounds)
@@ -386,14 +740,54 @@ import SpringInterpolation
         }
 
         private func rubberBand(_ offset: CGFloat, dimension: CGFloat) -> CGFloat {
-            let constant: CGFloat = 0.55
-            return (1.0 - (1.0 / ((offset * constant / dimension) + 1.0))) * dimension
+            AppKitScrollPhysics.elasticDelta(forReboundDelta: offset, dimension: dimension)
         }
 
         private func inverseRubberBand(_ offset: CGFloat, dimension: CGFloat) -> CGFloat {
-            let constant: CGFloat = 0.55
-            guard offset > 0, offset < dimension else { return offset }
-            return offset * dimension / (constant * (dimension - offset))
+            AppKitScrollPhysics.reboundDelta(forElasticDelta: offset, dimension: dimension)
+        }
+
+        private func startRubberBandAnimation(to target: CGPoint, velocityY: CGFloat) {
+            _isTracking = false
+            _isBouncing = true
+            _momentumAnimation = nil
+            _rubberBandAnimation = .init(
+                targetOffset: target,
+                initialPositionY: contentOffset.y - target.y,
+                // AppKit's function uses the opposite sign from visual velocity.
+                initialVelocityY: -velocityY
+            )
+            scrollingTarget = target
+
+            guard scrollingDisplayLink == nil else { return }
+            let link = DisplayLink()
+            link.delegatingObject(self)
+            scrollingDisplayLink = link
+            scrollingTik = CACurrentMediaTime()
+        }
+
+        @discardableResult
+        private func startMomentumAnimation(velocityY: CGFloat) -> Bool {
+            let duration = AppKitScrollPhysics.momentumDuration(initialVelocity: velocityY)
+            guard duration > 0 else { return false }
+
+            _isTracking = false
+            _isBouncing = false
+            _ignoresMomentumEvents = true
+            _rubberBandAnimation = nil
+            _momentumAnimation = .init(
+                initialOffset: contentOffset,
+                initialVelocityY: velocityY,
+                duration: duration
+            )
+            scrollingTarget = nil
+
+            guard scrollingDisplayLink == nil else { return true }
+            let link = DisplayLink()
+            link.delegatingObject(self)
+            scrollingDisplayLink = link
+            scrollingTik = CACurrentMediaTime()
+            return true
         }
 
         /// scroll to an offset
@@ -406,6 +800,9 @@ import SpringInterpolation
             angularFrequency: Double? = nil,
             preserveVelocity: Bool = true
         ) {
+            _rubberBandAnimation = nil
+            _momentumAnimation = nil
+            _isBouncing = false
             let target = nearestScrollLocationInBounds(offset: offset)
             let velocity: CGPoint = if preserveVelocity {
                 .init(
@@ -441,32 +838,108 @@ import SpringInterpolation
                 vel: .init(x: 0, y: 0)
             )
             scrollingTarget = nil
-            // Do NOT clear _isBouncing here — the system may still be sending
-            // momentum events that must be eaten. Only scrollWheel clears it.
+            _isBouncing = false
+            _rubberBandAnimation = nil
+            _momentumAnimation = nil
+            // Do not clear _ignoresMomentumEvents here. AppKit may still be
+            // sending native momentum from a gesture owned by a local animation.
             scrollingContext.setTarget(.init(x: currentContentOffset.x, y: currentContentOffset.y))
             scrollingDisplayLink?.delegatingObject(nil)
             scrollingDisplayLink = nil
         }
 
         func handleScrollingAnimation(_ context: DisplayLinkCallbackContext) {
-            if isTracking || scrollingContext.completed {
+            if _isTracking || _isVerticalScrollerTracking {
+                cancelCurrentScrolling()
+                return
+            }
+
+            if var rubberBandAnimation = _rubberBandAnimation {
+                rubberBandAnimation.elapsedTime += min(1 / 30, context.duration)
+                let displacement = AppKitScrollPhysics.elasticDelta(
+                    initialPosition: rubberBandAnimation.initialPositionY,
+                    initialVelocity: rubberBandAnimation.initialVelocityY,
+                    elapsedTime: rubberBandAnimation.elapsedTime
+                )
+                let roundedDisplacement = AppKitScrollPhysics.roundToDevicePixelTowardZero(displacement)
+                let animationComplete = roundedDisplacement == 0
+                    && rubberBandAnimation.elapsedTime > 0.024
+
+                if animationComplete {
+                    applyContentOffset(rubberBandAnimation.targetOffset)
+                    cancelCurrentScrolling()
+                } else {
+                    _rubberBandAnimation = rubberBandAnimation
+                    applyContentOffset(.init(
+                        x: rubberBandAnimation.targetOffset.x,
+                        y: rubberBandAnimation.targetOffset.y + roundedDisplacement
+                    ))
+                }
+                return
+            }
+
+            if var momentumAnimation = _momentumAnimation {
+                momentumAnimation.elapsedTime += min(1 / 30, context.duration)
+                let displacement = AppKitScrollPhysics.momentumDisplacement(
+                    initialVelocity: momentumAnimation.initialVelocityY,
+                    elapsedTime: momentumAnimation.elapsedTime,
+                    duration: momentumAnimation.duration
+                )
+                let proposedOffset = CGPoint(
+                    x: momentumAnimation.initialOffset.x,
+                    y: momentumAnimation.initialOffset.y + displacement
+                )
+                let clampedOffset = nearestScrollLocationInBounds(offset: proposedOffset)
+
+                if proposedOffset != clampedOffset {
+                    let rawOverscroll = proposedOffset.y - clampedOffset.y
+                    let visualOverscroll = AppKitScrollPhysics.elasticDelta(
+                        forReboundDelta: rawOverscroll,
+                        dimension: bounds.height
+                    )
+                    let velocity = AppKitScrollPhysics.momentumVelocity(
+                        initialVelocity: momentumAnimation.initialVelocityY,
+                        elapsedTime: momentumAnimation.elapsedTime,
+                        duration: momentumAnimation.duration
+                    )
+                    applyContentOffset(.init(
+                        x: clampedOffset.x,
+                        y: clampedOffset.y + visualOverscroll
+                    ))
+                    startRubberBandAnimation(to: clampedOffset, velocityY: velocity)
+                } else if momentumAnimation.elapsedTime >= momentumAnimation.duration {
+                    applyContentOffset(proposedOffset)
+                    cancelCurrentScrolling()
+                } else {
+                    _momentumAnimation = momentumAnimation
+                    applyContentOffset(proposedOffset)
+                }
+                return
+            }
+
+            if scrollingContext.completed {
                 cancelCurrentScrolling()
                 return
             }
             let delta = min(1 / 30, context.duration)
             scrollingContext.update(withDeltaTime: delta)
-            // Do NOT clamp here — the spring target is already clamped in scroll(to:).
-            // Clamping intermediate values kills the bounce-back animation
-            // (e.g. spring animating from -10 to 0 would visually jump to 0 on frame 1).
             let loc = CGPoint(
                 x: scrollingContext.x.value,
                 y: scrollingContext.y.value
             )
-            setContentOffset(loc, animated: false)
+            applyContentOffset(loc)
         }
 
         open func setContentOffset(_ contentOffset: CGPoint, animated: Bool) {
-            assert(!animated)
+            if animated {
+                scroll(to: contentOffset)
+            } else {
+                cancelCurrentScrolling()
+                applyContentOffset(contentOffset)
+            }
+        }
+
+        private func applyContentOffset(_ contentOffset: CGPoint) {
             self.contentOffset = contentOffset
         }
     }
@@ -480,3 +953,28 @@ import SpringInterpolation
 #else
     #error("ListViewKit requires UIKit or AppKit")
 #endif
+
+public extension ListScrollView {
+    /// Whether direct user scrolling or platform momentum is currently active.
+    ///
+    /// Consumers can use this to avoid retargeting programmatic scrolling while
+    /// the user is inspecting earlier content. Programmatic spring scrolling is
+    /// intentionally not reported as user interaction.
+    var isUserInteractingWithScroll: Bool {
+        #if canImport(UIKit)
+            isTracking || isDragging || isDecelerating
+        #elseif canImport(AppKit)
+            isTracking
+        #endif
+    }
+
+    /// Returns whether the vertical offset is at the bottom edge, allowing a
+    /// small tolerance for fractional layout and display-scale differences.
+    ///
+    /// Bottom overscroll also returns `true`. A negative or non-finite
+    /// tolerance is treated as zero.
+    func isScrolledToBottom(tolerance: CGFloat = 1) -> Bool {
+        let normalizedTolerance = tolerance.isFinite ? max(0, tolerance) : 0
+        return maximumContentOffset.y - contentOffset.y <= normalizedTolerance
+    }
+}

@@ -28,6 +28,7 @@ open class ListView: ListScrollView {
     lazy var layoutCache: LayoutCache = .init(self)
     lazy var visibleRows: [AnyHashable: ListRowView] = [:]
     lazy var reusableRows: [AnyHashable: Reference<Deque<ListRowView>>] = [:]
+    var rowsPendingRemoval: [ListRowView] = []
 
     public var topInset: CGFloat = 0 {
         didSet {
@@ -109,12 +110,7 @@ open class ListView: ListScrollView {
 
         prepareVisibleRows()
         for (id, rowView) in visibleRows {
-            rowView.frame = rectForRow(with: id)
-            #if canImport(UIKit)
-                rowView.setNeedsLayout()
-            #elseif canImport(AppKit)
-                rowView.needsLayout = true
-            #endif
+            updateFrame(of: rowView, to: rectForRow(with: id))
         }
 
         #if DEBUG
@@ -139,15 +135,22 @@ open class ListView: ListScrollView {
         contentSize = supposedContentSize
 
         for (id, rowView) in visibleRows {
-            rowView.frame = rectForRow(with: id)
-            #if canImport(UIKit)
-                rowView.setNeedsLayout()
-            #elseif canImport(AppKit)
-                rowView.needsLayout = true
-            #endif
+            updateFrame(of: rowView, to: rectForRow(with: id))
         }
 
         removeUnusedRowsFromSuperview()
+    }
+
+    private func updateFrame(of rowView: ListRowView, to targetFrame: CGRect) {
+        guard rowView.frame != targetFrame else { return }
+        let sizeChanged = rowView.frame.size != targetFrame.size
+        rowView.frame = targetFrame
+        guard sizeChanged else { return }
+        #if canImport(UIKit)
+            rowView.setNeedsLayout()
+        #elseif canImport(AppKit)
+            rowView.needsLayout = true
+        #endif
     }
 }
 
@@ -271,13 +274,14 @@ extension ListView {
         rowView.rowKind = nil
         reusableDequeRef(for: kind)
             .modifying { $0.append(rowView) }
+        rowsPendingRemoval.append(rowView)
     }
 
     func removeUnusedRowsFromSuperview() {
-        for dequeRef in reusableRows.values {
-            for item in dequeRef.wrappedValue {
-                item.removeFromSuperview()
-            }
+        let pendingRows = rowsPendingRemoval
+        rowsPendingRemoval.removeAll(keepingCapacity: true)
+        for rowView in pendingRows where rowView.rowKind == nil {
+            rowView.removeFromSuperview()
         }
     }
 

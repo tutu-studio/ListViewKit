@@ -236,11 +236,11 @@ import SpringInterpolation
         open func animationTik(delta: TimeInterval = 0) {
             if delta > 0 { heightAnimator?.update(withDeltaTime: delta) }
             guard let height = heightAnimator?.value else { return }
-            NSAnimationContext.beginGrouping()
-            NSAnimationContext.current.duration = 0
-            heightConstraint.constant = CGFloat(height)
-            display()
-            NSAnimationContext.endGrouping()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                heightConstraint.constant = CGFloat(height)
+                display()
+            }
             stopDisplayLinkIfIdle()
         }
     }

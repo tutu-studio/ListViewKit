@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  swift-package:
+    name: Swift package
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Show toolchain versions
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build macOS example
+        run: swift build --package-path Example/ListExampleMac
+
+      - name: Build runtime benchmarks
+        run: swift build -c release --product ListViewKitBenchmarks
+
+  apple-platforms:
+    name: iOS and Mac Catalyst
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build for iOS Simulator
+        run: |
+          xcodebuild \
+            -scheme ListViewKit \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/ListViewKitDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Build for Mac Catalyst
+        run: |
+          xcodebuild \
+            -scheme ListViewKit \
+            -destination 'generic/platform=macOS,variant=Mac Catalyst' \
+            -derivedDataPath "$RUNNER_TEMP/ListViewKitCatalystDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            build

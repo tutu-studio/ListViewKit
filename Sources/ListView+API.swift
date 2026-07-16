@@ -26,19 +26,39 @@ public extension ListView {
             origin: .init(x: offset.x, y: offset.y - topInset),
             size: bounds.size
         )
-        return layoutCache.allFrames()
-            .filter { $0.value.intersects(visibleRect) }
-            .map(\.key)
-            .sorted()
+        return layoutCache.indices(intersecting: visibleRect)
     }
 
-    func invaliateLayout() {
+    /// Invalidates every cached row height and frame.
+    ///
+    /// Prefer ``invalidateLayout(forRowWithID:)`` when one self-sizing row
+    /// changes. Keeping the remaining identity-based height cache intact is
+    /// substantially cheaper for streaming or expandable content.
+    func invalidateLayout() {
         layoutCache.invalidateAll()
-        #if canImport(UIKit)
-            setNeedsLayout()
-        #elseif canImport(AppKit)
-            needsLayout = true
-        #endif
+        requestLayout()
+    }
+
+    /// Invalidates the cached height and all dependent frames for one row.
+    ///
+    /// The identifier must match the item's `Identifiable.id`, not its row
+    /// kind. Unknown identifiers are ignored. The adapter's height closure is
+    /// called again, and the new frames are installed during the next layout
+    /// pass.
+    func invalidateLayout(forRowWithID identifier: some Hashable) {
+        guard dataSource?.itemIndex(for: identifier, in: self) != nil else {
+            return
+        }
+        let identifiers = CollectionOfOne(identifier)
+        if !layoutCache.invalidateHeights(for: identifiers) {
+            layoutCache.requestInvalidateHeights(for: identifiers)
+        }
+        requestLayout()
+    }
+
+    @available(*, deprecated, renamed: "invalidateLayout()")
+    func invaliateLayout() {
+        invalidateLayout()
     }
 
     func rowView(at index: Int) -> ListRowView? {
@@ -68,6 +88,14 @@ public extension ListView {
         visibleRows.removeAll()
         removeUnusedRowsFromSuperview()
         reusableRows.removeAll()
-        invaliateLayout()
+        invalidateLayout()
+    }
+
+    private func requestLayout() {
+        #if canImport(UIKit)
+            setNeedsLayout()
+        #elseif canImport(AppKit)
+            needsLayout = true
+        #endif
     }
 }

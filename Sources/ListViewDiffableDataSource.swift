@@ -41,6 +41,44 @@ public class ListViewDiffableDataSource<Item: Identifiable & Hashable>: ListView
         applySnapshot(snapshot, animatingDifferences: animatingDifferences)
     }
 
+    /// Updates one existing item without diffing a complete snapshot.
+    ///
+    /// This is the preferred path for high-frequency changes such as a
+    /// streaming response. The item's identifier must already exist. Returns
+    /// `true` when the stored value changed.
+    @discardableResult
+    public func updateItem(_ item: Item) -> Bool {
+        guard let listView,
+              let current = elements[item.id],
+              current != item
+        else {
+            return false
+        }
+
+        elements[item.id] = item
+        let identifiers = CollectionOfOne(item.id)
+        if !listView.layoutCache.invalidateHeights(for: identifiers) {
+            listView.layoutCache.requestInvalidateHeights(for: identifiers)
+        }
+
+        let identifier = AnyHashable(item.id)
+        if let newRowView = listView.updateRowKindIfNeeded(for: identifier) {
+            _ = newRowView
+        } else {
+            listView.reconfigureRowView(for: identifier)
+        }
+        listView.layoutCache.finalizeInvalidationRequests()
+
+        #if canImport(UIKit)
+            listView.setNeedsLayout()
+            listView.layoutIfNeeded()
+        #elseif canImport(AppKit)
+            listView.needsLayout = true
+            listView.layoutSubtreeIfNeeded()
+        #endif
+        return true
+    }
+
     #if canImport(UIKit)
         func createAnimationForDisposeView(on view: UIView, listView: ListView) {
             view.layoutIfNeeded()
@@ -88,16 +126,6 @@ public class ListViewDiffableDataSource<Item: Identifiable & Hashable>: ListView
         let diffResult = difference(with: snapshot.elements)
         if diffResult.isEmpty { return }
 
-        #if canImport(AppKit)
-            // On macOS, disable animation when cells are reordered —
-            // AppKit frame animations for reorder look unnatural.
-            let animatingDifferences = if !diffResult.reordered.isEmpty {
-                false
-            } else {
-                animatingDifferences
-            }
-        #endif
-
         let addedItemIdentifiers = diffResult.added.map(\.identifier)
 
         let removed = diffResult.removed
@@ -117,7 +145,13 @@ public class ListViewDiffableDataSource<Item: Identifiable & Hashable>: ListView
         elements = newElements
 
         let updated = diffResult.updated
-        listView.layoutCache.requestInvalidateHeights(for: updated.map(\.identifier))
+        let reordered = diffResult.reordered
+        let identifiersNeedingMeasurement = updated.map(\.identifier)
+            + reordered.map(\.identifier)
+        if !listView.layoutCache.invalidateHeights(for: identifiersNeedingMeasurement) {
+            listView.layoutCache.requestInvalidateHeights(for: identifiersNeedingMeasurement)
+        }
+
         for index in updated {
             let identifier = index.identifier
             if let newRowView = listView.updateRowKindIfNeeded(for: identifier) {
@@ -127,8 +161,6 @@ public class ListViewDiffableDataSource<Item: Identifiable & Hashable>: ListView
             }
         }
 
-        let reordered = diffResult.reordered
-        listView.layoutCache.requestInvalidateHeights(for: reordered.map(\.identifier))
         for reorderInfo in reordered {
             let identifier = reorderInfo.identifier
             // Force update/reconfigure for reordered items as requested
@@ -176,7 +208,7 @@ public class ListViewDiffableDataSource<Item: Identifiable & Hashable>: ListView
                         listView.layoutIfNeeded()
                     #elseif canImport(AppKit)
                         listView.needsLayout = true
-                        listView.display()
+                        listView.layoutSubtreeIfNeeded()
                     #endif
                 }
             }
@@ -186,7 +218,7 @@ public class ListViewDiffableDataSource<Item: Identifiable & Hashable>: ListView
                 listView.layoutIfNeeded()
             #elseif canImport(AppKit)
                 listView.needsLayout = true
-                listView.display()
+                listView.layoutSubtreeIfNeeded()
             #endif
         }
     }
