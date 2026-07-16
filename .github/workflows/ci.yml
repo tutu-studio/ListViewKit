@@ -10,10 +10,10 @@ permissions:
 jobs:
   swift-package:
     name: Swift package
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Show toolchain versions
         run: |
@@ -31,10 +31,10 @@ jobs:
 
   apple-platforms:
     name: iOS and Mac Catalyst
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build for iOS Simulator
         run: |
