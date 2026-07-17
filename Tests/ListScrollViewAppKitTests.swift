@@ -352,6 +352,111 @@ struct ListScrollViewAppKitTests {
     }
 
     @Test
+    func contentOffsetRebaseKeepsDirectTrackingInTheTranslatedCoordinateSpace() throws {
+        let scrollView = ListScrollView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        scrollView.contentSize = CGSize(width: 200, height: 2_000)
+        scrollView.contentOffset = CGPoint(x: 0, y: 800)
+
+        let initialTimestamp: CGEventTimestamp = 1_000_000_000
+        scrollView.scrollWheel(with: try makeWheelEvent(
+            deltaY: 1,
+            phase: .began,
+            timestamp: initialTimestamp
+        ))
+        #expect(scrollView.contentOffset.y == 790)
+
+        scrollView.contentSize.height += 500
+        scrollView.rebaseContentOffset(by: CGPoint(x: 0, y: 500))
+        #expect(scrollView.contentOffset.y == 1_290)
+        #expect(scrollView.isUserInteractingWithScroll)
+
+        scrollView.scrollWheel(with: try makeWheelEvent(
+            deltaY: 1,
+            phase: .changed,
+            timestamp: initialTimestamp + 10_000_000
+        ))
+        #expect(scrollView.contentOffset.y == 1_280)
+        scrollView.scrollWheel(with: try makeWheelEvent(
+            deltaY: 0,
+            phase: .cancelled,
+            timestamp: initialTimestamp + 11_000_000
+        ))
+    }
+
+    @Test
+    func contentOffsetRebaseKeepsMomentumInTheTranslatedCoordinateSpace() throws {
+        let scrollView = ListScrollView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        scrollView.contentSize = CGSize(width: 200, height: 10_000)
+        scrollView.contentOffset = CGPoint(x: 0, y: 5_000)
+
+        let initialTimestamp: CGEventTimestamp = 1_000_000_000
+        scrollView.scrollWheel(with: try makeWheelEvent(
+            deltaY: 1,
+            phase: .began,
+            timestamp: initialTimestamp
+        ))
+        scrollView.scrollWheel(with: try makeWheelEvent(
+            deltaY: 1,
+            phase: .changed,
+            timestamp: initialTimestamp + 10_000_000
+        ))
+        scrollView.scrollWheel(with: try makeWheelEvent(
+            deltaY: 0,
+            phase: .ended,
+            timestamp: initialTimestamp + 11_000_000
+        ))
+        #expect(scrollView.isUserInteractingWithScroll)
+
+        scrollView.contentSize.height += 500
+        scrollView.rebaseContentOffset(by: CGPoint(x: 0, y: 500))
+        let rebasedOffset = scrollView.contentOffset.y
+        #expect(rebasedOffset > 5_400)
+
+        scrollView.handleScrollingAnimation(.init(
+            duration: 1 / 60,
+            timestamp: 1 / 60,
+            targetTimestamp: 2 / 60
+        ))
+        #expect(scrollView.contentOffset.y > rebasedOffset - 100)
+        #expect(scrollView.isUserInteractingWithScroll)
+        scrollView.cancelCurrentScrolling()
+    }
+
+    @Test
+    func contentOffsetRebaseRetargetsProgrammaticSpringWithoutCancellingIt() {
+        let scrollView = ListScrollView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        scrollView.contentSize = CGSize(width: 200, height: 2_000)
+        scrollView.scroll(to: CGPoint(x: 0, y: 800), preserveVelocity: false)
+        #expect(scrollView.scrollingDisplayLink != nil)
+
+        scrollView.contentSize.height += 500
+        scrollView.rebaseContentOffset(by: CGPoint(x: 0, y: 500))
+
+        #expect(scrollView.contentOffset == CGPoint(x: 0, y: 500))
+        #expect(scrollView.scrollingDisplayLink != nil)
+        for tick in 0 ..< 180 {
+            scrollView.handleScrollingAnimation(.init(
+                duration: 1 / 60,
+                timestamp: Double(tick) / 60,
+                targetTimestamp: Double(tick + 1) / 60
+            ))
+        }
+        #expect(abs(scrollView.contentOffset.y - 1_300) < 1)
+    }
+
+    @Test
+    func contentOffsetRebaseIgnoresInvalidDeltas() {
+        let scrollView = ListScrollView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        scrollView.contentSize = CGSize(width: 200, height: 2_000)
+        scrollView.contentOffset = CGPoint(x: 0, y: 800)
+
+        scrollView.rebaseContentOffset(by: .zero)
+        scrollView.rebaseContentOffset(by: CGPoint(x: CGFloat.infinity, y: 100))
+
+        #expect(scrollView.contentOffset == CGPoint(x: 0, y: 800))
+    }
+
+    @Test
     func animatedContentOffsetUsesSpringScrolling() {
         let scrollView = ListScrollView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
         scrollView.contentSize = CGSize(width: 200, height: 2_000)

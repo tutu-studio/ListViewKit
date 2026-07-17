@@ -155,6 +155,55 @@ import SpringInterpolation
             }
         }
 
+        /// Translates the viewport and any in-flight scrolling by the same amount.
+        ///
+        /// Use this after a data or layout update shifts the content coordinates of
+        /// an item that should remain at the same visual position. A common example
+        /// is prepending older messages above the first visible message: capture the
+        /// message's viewport-relative position, apply the snapshot, then rebase by
+        /// the difference between its new and old content coordinates.
+        ///
+        /// Unlike ``setContentOffset(_:animated:)``, rebasing does not start a new
+        /// programmatic scroll or cancel ListViewKit's spring animation. Native
+        /// drag and deceleration remain owned by `UIScrollView`; callers that need
+        /// an exact native deceleration target should apply the coordinate change
+        /// before deceleration begins. Update content geometry first and supply a
+        /// finite delta in content coordinates.
+        ///
+        /// This API is not a replacement for ``scrollToRow(at:at:animated:)``. Use
+        /// it only to compensate for coordinates changed by an already-applied
+        /// content update.
+        public func rebaseContentOffset(by delta: CGPoint) {
+            guard delta.x.isFinite, delta.y.isFinite, delta != .zero else { return }
+
+            let translatedOffset = CGPoint(
+                x: contentOffset.x + delta.x,
+                y: contentOffset.y + delta.y
+            )
+            if let target = scrollingTarget {
+                let translatedTarget = CGPoint(
+                    x: target.x + delta.x,
+                    y: target.y + delta.y
+                )
+                scrollingContext.setCurrent(
+                    .init(
+                        x: scrollingContext.x.value + delta.x,
+                        y: scrollingContext.y.value + delta.y
+                    ),
+                    vel: .init(
+                        x: scrollingContext.x.context.currentVel,
+                        y: scrollingContext.y.context.currentVel
+                    )
+                )
+                scrollingContext.setTarget(.init(
+                    x: translatedTarget.x,
+                    y: translatedTarget.y
+                ))
+                scrollingTarget = translatedTarget
+            }
+            applyContentOffset(translatedOffset)
+        }
+
         private func applyContentOffset(_ contentOffset: CGPoint) {
             super.setContentOffset(contentOffset, animated: false)
         }
@@ -937,6 +986,79 @@ import SpringInterpolation
                 cancelCurrentScrolling()
                 applyContentOffset(contentOffset)
             }
+        }
+
+        /// Translates the viewport and every in-flight scrolling coordinate by
+        /// the same amount without interrupting the current motion.
+        ///
+        /// Use this after a data or layout update shifts the content coordinates
+        /// of an item that should remain at the same visual position. For example,
+        /// when older messages are prepended, capture the first visible message's
+        /// viewport-relative position, apply the snapshot, then rebase by the
+        /// difference between its new and old content coordinates.
+        ///
+        /// Rebasing preserves direct wheel or trackpad tracking, ListViewKit
+        /// momentum, elastic rebound, native scroller tracking, and programmatic
+        /// spring scrolling. In contrast, ``setContentOffset(_:animated:)`` starts
+        /// or cancels scrolling intentionally. Update the content geometry first,
+        /// then pass a finite delta in content coordinates.
+        ///
+        /// This API is not a replacement for ``scrollToRow(at:at:animated:)``. Use
+        /// it only to compensate for coordinates changed by an already-applied
+        /// content update.
+        public func rebaseContentOffset(by delta: CGPoint) {
+            guard delta.x.isFinite, delta.y.isFinite, delta != .zero else { return }
+
+            let translatedOffset = CGPoint(
+                x: contentOffset.x + delta.x,
+                y: contentOffset.y + delta.y
+            )
+            _trackingRawOffsetY += delta.y
+
+            if let momentum = _momentumAnimation {
+                _momentumAnimation = MomentumAnimation(
+                    initialOffset: CGPoint(
+                        x: momentum.initialOffset.x + delta.x,
+                        y: momentum.initialOffset.y + delta.y
+                    ),
+                    initialVelocityY: momentum.initialVelocityY,
+                    duration: momentum.duration,
+                    elapsedTime: momentum.elapsedTime
+                )
+            }
+            if let rebound = _rubberBandAnimation {
+                _rubberBandAnimation = RubberBandAnimation(
+                    targetOffset: CGPoint(
+                        x: rebound.targetOffset.x + delta.x,
+                        y: rebound.targetOffset.y + delta.y
+                    ),
+                    initialPositionY: rebound.initialPositionY,
+                    initialVelocityY: rebound.initialVelocityY,
+                    elapsedTime: rebound.elapsedTime
+                )
+            }
+            if let target = scrollingTarget {
+                let translatedTarget = CGPoint(
+                    x: target.x + delta.x,
+                    y: target.y + delta.y
+                )
+                scrollingContext.setCurrent(
+                    .init(
+                        x: scrollingContext.x.value + delta.x,
+                        y: scrollingContext.y.value + delta.y
+                    ),
+                    vel: .init(
+                        x: scrollingContext.x.context.currentVel,
+                        y: scrollingContext.y.context.currentVel
+                    )
+                )
+                scrollingContext.setTarget(.init(
+                    x: translatedTarget.x,
+                    y: translatedTarget.y
+                ))
+                scrollingTarget = translatedTarget
+            }
+            applyContentOffset(translatedOffset)
         }
 
         private func applyContentOffset(_ contentOffset: CGPoint) {

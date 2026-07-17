@@ -31,7 +31,7 @@ Add ListViewKit to your package dependencies:
 dependencies: [
     .package(
         url: "https://github.com/Lakr233/ListViewKit",
-        from: "1.2.0"
+        from: "2.0.0"
     ),
 ]
 ```
@@ -143,6 +143,54 @@ listView.invalidateLayout(forRowWithID: message.id)
 Use `invalidateLayout()` only when every cached height may have changed, such
 as after replacing global typography metrics. The misspelled legacy
 `invaliateLayout()` API remains available as a deprecated compatibility shim.
+
+### Preserve the viewport while prepending content
+
+Feeds and chat transcripts often prepend older rows when the reader approaches
+the top. Applying that snapshot keeps the same absolute `contentOffset`, but the
+existing visible rows now have larger content coordinates. Correcting the offset
+with `setContentOffset` can cancel an active drag or momentum.
+
+Capture a stable visible item and its position relative to the viewport, apply
+the content update, then rebase by the coordinate difference:
+
+```swift
+let anchorID = messages[firstVisibleIndex].id
+let viewportY = listView.rectForRow(with: anchorID).minY
+    - listView.contentOffset.y
+
+// The item identifiers that were already visible must remain stable.
+dataSource.applySnapshot(using: olderMessages + messages)
+#if canImport(UIKit)
+listView.layoutIfNeeded()
+#elseif canImport(AppKit)
+listView.layoutSubtreeIfNeeded()
+#endif
+
+let targetOffsetY = listView.rectForRow(with: anchorID).minY - viewportY
+let deltaY = targetOffsetY - listView.contentOffset.y
+listView.rebaseContentOffset(by: CGPoint(x: 0, y: deltaY))
+```
+
+On AppKit, `rebaseContentOffset(by:)` translates the viewport together with
+active trackpad or wheel tracking, ListViewKit momentum, elastic rebound, native
+scroller tracking, and programmatic spring scrolling. On UIKit it translates the
+current viewport and retargets ListViewKit's programmatic spring; native drag and
+deceleration remain owned by `UIScrollView`, so callers that require an exact
+native deceleration target should apply the page before deceleration begins.
+
+Use rebasing for coordinate changes that have already happened, including:
+
+- prepending an earlier page above the visible rows;
+- removing a page above the visible rows;
+- replacing an estimated row height above the viewport with its resolved height.
+
+Call it only after the snapshot or layout change has updated row coordinates.
+The delta must be finite and expressed in content coordinates. It intentionally
+does not choose an anchor, apply a snapshot, or scroll to a destination; use
+stable item identifiers plus `rectForRow(with:)` to implement the product's
+anchor policy, and use `scrollToRow` for ordinary navigation. Appending below
+the viewport does not normally require rebasing.
 
 ### Follow streaming content
 
