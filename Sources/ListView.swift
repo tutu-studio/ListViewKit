@@ -507,7 +507,11 @@ extension ListView {
     }
 
     private func prepareReusedRowForPlacement(_ rowView: ListRowView) {
-        rowView.layer?.removeAllAnimations()
+        #if canImport(UIKit)
+            rowView.layer.removeAllAnimations()
+        #elseif canImport(AppKit)
+            rowView.layer?.removeAllAnimations()
+        #endif
     }
 
     private func installInitialFrame(_ frame: CGRect, on rowView: ListRowView) {
