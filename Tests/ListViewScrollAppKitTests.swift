@@ -383,6 +383,85 @@ struct ListViewScrollAppKitTests {
     }
 
     @Test
+    func animatedHeightChangeRetainsRowsUntilTheirPresentationCanLeaveViewport() async throws {
+        let listView = ListView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        let adapter = VariableHeightListAdapter()
+        let dataSource = ListViewDiffableDataSource<ScrollItem>(listView: listView)
+        listView.adapter = adapter
+        dataSource.applySnapshot(using: (0 ..< 3).map { ScrollItem(id: $0) })
+        listView.contentOffset = .zero
+        listView.layoutSubtreeIfNeeded()
+
+        let departingRow = try #require(listView.rowView(at: 1))
+        adapter.heights[0] = 300
+        listView.invalidateLayout(forRowWithID: 0)
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0.2
+        NSAnimationContext.current.allowsImplicitAnimation = true
+        listView.layoutSubtreeIfNeeded()
+        NSAnimationContext.endGrouping()
+
+        #expect(listView.rowView(at: 1) === departingRow)
+        try await Task.sleep(for: .milliseconds(350))
+        listView.layoutSubtreeIfNeeded()
+        #expect(listView.rowView(at: 1) == nil)
+
+        listView.animateHeightChange(
+            forRowWithID: 0,
+            animation: ListViewHeightAnimation(duration: 0.2)
+        ) {
+            adapter.heights[0] = 100
+            listView.invalidateLayout(forRowWithID: 0)
+        }
+
+        let returningRow = try #require(listView.rowView(at: 1))
+        #expect(returningRow === departingRow)
+        #expect(returningRow.frame == listView.rectForRow(at: 1))
+        #expect(returningRow.layer?.animationKeys()?.contains(
+            "ListViewKit.height.position"
+        ) == true)
+        let positionAnimation = try #require(
+            returningRow.layer?.animation(
+                forKey: "ListViewKit.height.position"
+            ) as? CAKeyframeAnimation
+        )
+        let scale = NSScreen.main?.backingScaleFactor ?? 1
+        let positionValues = try #require(positionAnimation.values as? [NSValue])
+        #expect(positionValues.allSatisfy { value in
+            let scaledY = value.pointValue.y * scale
+            return abs(scaledY - scaledY.rounded()) <= 0.001
+        })
+        #expect(returningRow.layer?.animationKeys()?.allSatisfy {
+            !$0.localizedCaseInsensitiveContains("opacity")
+        } == true)
+    }
+
+    @Test
+    func reusedRowDropsPreviousIdentityAnimationAndInstallsAtTargetFrame() throws {
+        let listView = ListView(frame: CGRect(x: 0, y: 0, width: 200, height: 100))
+        let adapter = FixedHeightListAdapter()
+        let dataSource = ListViewDiffableDataSource<ScrollItem>(listView: listView)
+        listView.adapter = adapter
+        dataSource.applySnapshot(using: (0 ..< 3).map { ScrollItem(id: $0) })
+        listView.layoutSubtreeIfNeeded()
+
+        let originalRow = try #require(listView.rowView(at: 0))
+        let staleAnimation = CABasicAnimation(keyPath: "position.y")
+        staleAnimation.fromValue = 50
+        staleAnimation.toValue = 150
+        staleAnimation.duration = 2
+        originalRow.layer?.add(staleAnimation, forKey: "previous-identity")
+
+        listView.contentOffset.y = 200
+        listView.layoutSubtreeIfNeeded()
+
+        let reusedRow = try #require(listView.rowView(at: 2))
+        #expect(reusedRow === originalRow)
+        #expect(reusedRow.frame == listView.rectForRow(at: 2))
+        #expect(reusedRow.layer?.animationKeys()?.isEmpty != false)
+    }
+
+    @Test
     func invalidRowDoesNotChangeTheContentOffset() {
         let context = makeListView()
         let listView = context.listView
