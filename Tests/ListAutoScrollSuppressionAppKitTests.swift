@@ -104,37 +104,29 @@ struct ListAutoScrollSuppressionAppKitTests {
         scrollView.cancelCurrentScrolling()
     }
 
-    /// Once momentum has been handed off to the local rebound, AppKit goes on
-    /// delivering its own momentum tail for about a second. The view discards
-    /// those, and a window they kept re-arming would outlast a list that has
-    /// visibly come to rest.
+    /// AppKit owns momentum and rebound in the native hierarchy. Their live
+    /// scroll lifecycle, rather than a local physics flag, keeps the host gate
+    /// closed until native scrolling ends.
     @Test
-    func momentumTheViewDiscardsDoesNotExtendTheWindow() throws {
+    func nativeMomentumKeepsTheGateClosedUntilLiveScrollingEnds() {
         let scrollView = makeScrollView()
-        scrollView.scrollWheel(with: try makeWheelEvent(deltaY: 100, momentumPhase: .began))
-        #expect(scrollView.isAutoScrollSuppressed)
+        NotificationCenter.default.post(
+            name: NSScrollView.willStartLiveScrollNotification,
+            object: scrollView.nativeScrollView
+        )
 
         waitOutSuppressionWindow()
         #expect(!scrollView.isAutoScrollSuppressed)
+        #expect(scrollView.isScrollOffsetOwnedByUser)
+        #expect(scrollView.isUserInteractingWithScroll)
 
-        scrollView.scrollWheel(with: try makeWheelEvent(deltaY: 100, momentumPhase: .changed))
-        #expect(!scrollView.isAutoScrollSuppressed, "a discarded event re-armed the window")
-        scrollView.cancelCurrentScrolling()
-    }
-
-    /// A bounce runs several times longer than the window. The gate has to
-    /// cover it: a host that scrolls into one cuts it off mid-flight, since
-    /// `scroll(to:)` clears the rebound on its first line.
-    @Test
-    func aReboundHoldsTheGateForAsLongAsItRuns() throws {
-        let scrollView = makeScrollView()
-        scrollView.scrollWheel(with: try makeWheelEvent(deltaY: 100, momentumPhase: .began))
-        #expect(scrollView.isReboundingFromOverscroll, "the overscroll never handed off")
-
+        NotificationCenter.default.post(
+            name: NSScrollView.didEndLiveScrollNotification,
+            object: scrollView.nativeScrollView
+        )
+        #expect(!scrollView.isScrollOffsetOwnedByUser)
+        #expect(scrollView.isAutoScrollSuppressed)
         waitOutSuppressionWindow()
-        #expect(!scrollView.isAutoScrollSuppressed, "the window should have expired")
-        #expect(scrollView.isUserInteractingWithScroll, "the gate dropped while the bounce ran")
-        scrollView.cancelCurrentScrolling()
     }
 
     // MARK: - Resize
@@ -227,22 +219,20 @@ struct ListAutoScrollSuppressionAppKitTests {
         scrollView.cancelCurrentScrolling()
     }
 
-    /// The expiry has to leave an out-of-bounds offset a layout pass to be
-    /// clamped in — and has to leave everything else alone. Invalidating
-    /// unconditionally closes a loop on UIKit, where the pass re-arms the
-    /// window from `isTracking`.
+    /// An in-bounds native viewport needs no correction when suppression
+    /// expires, so expiry must leave its offset alone.
     @Test
-    func anExpiryWithNothingToClampSchedulesNoLayout() throws {
+    func anExpiryWithNothingToClampLeavesTheOffsetAlone() throws {
         let scrollView = makeScrollView()
         scrollView.scrollWheel(with: try makeWheelEvent(deltaY: 1))
         scrollView.layoutSubtreeIfNeeded()
-        #expect(!scrollView.needsLayout)
         #expect(scrollView.isContentOffsetWithinBounds(offset: scrollView.contentOffset))
+        let offset = scrollView.contentOffset
 
         waitOutSuppressionWindow()
 
         #expect(!scrollView.isAutoScrollSuppressed)
-        #expect(!scrollView.needsLayout, "the expiry invalidated layout with nothing to clamp")
+        #expect(scrollView.contentOffset == offset)
     }
 
     /// Nor does it block a scroll the host asks for outright: refusing that

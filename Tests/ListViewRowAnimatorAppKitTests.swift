@@ -242,7 +242,10 @@ struct ListViewRowAnimatorAppKitTests {
         listView.layoutSubtreeIfNeeded()
         listView.tickRowAnimator(duration: Self.frame)
 
-        listView.scrollWheel(with: try makeWheelEvent(deltaY: 2))
+        let event = try makeWheelEvent(deltaY: 2)
+        listView.nativeScrollWheelWillBegin(event)
+        listView.contentOffset.y -= 20
+        listView.nativeScrollWheelDidEnd(event)
         listView.layoutSubtreeIfNeeded()
         listView.tickRowAnimator(duration: Self.frame)
 
@@ -262,7 +265,10 @@ struct ListViewRowAnimatorAppKitTests {
         listView.layoutSubtreeIfNeeded()
         listView.tickRowAnimator(duration: Self.frame)
 
-        listView.scrollWheel(with: try makeWheelEvent(deltaY: 20, phase: .began))
+        let began = try makeWheelEvent(deltaY: 20, phase: .began)
+        listView.nativeScrollWheelWillBegin(began)
+        listView.contentOffset.y -= 20
+        listView.nativeScrollWheelDidEnd(began)
         listView.layoutSubtreeIfNeeded()
         listView.tickRowAnimator(duration: Self.frame)
 
@@ -271,31 +277,22 @@ struct ListViewRowAnimatorAppKitTests {
         listView.scrollWheel(with: try makeWheelEvent(deltaY: 0, phase: .ended))
     }
 
-    /// Notching past an edge rubber-bands and clamps back; that clamp is the
-    /// wheel's own motion unwinding, and it may not spring the rows either.
+    /// AppKit owns edge elasticity in the native hierarchy. A content-size
+    /// clamp performed by ListViewKit is still a correction rather than travel
+    /// and must not reach the row attachments.
     @Test
-    func theClampAfterAWheelOverrunIsNotTravel() throws {
+    func aNativeContentClampIsNotTravel() {
         let listView = makeListView()
         listView.rowAnimator = ListBouncyAnimator()
-        let bottom = listView.maximumContentOffset
-        listView.setContentOffset(bottom, animated: false)
+        listView.setContentOffset(listView.maximumContentOffset, animated: false)
         listView.layoutSubtreeIfNeeded()
         listView.tickRowAnimator(duration: Self.frame)
 
-        listView.scrollWheel(with: try makeWheelEvent(deltaY: -30))
-        #expect(listView.contentOffset.y > bottom.y)
-
-        for _ in 0 ..< 600 {
-            listView.handleScrollingAnimation(.init(
-                duration: Self.frame,
-                timestamp: 0,
-                targetTimestamp: Self.frame
-            ))
-        }
+        listView.contentSize.height = listView.bounds.height
         listView.layoutSubtreeIfNeeded()
         listView.tickRowAnimator(duration: Self.frame)
 
-        #expect(abs(listView.contentOffset.y - bottom.y) <= 1)
+        #expect(listView.contentOffset.y == 0)
         #expect(listView.scrollLedger.pending == 0)
         #expect(displacements(listView).allSatisfy { $0 == 0 })
     }

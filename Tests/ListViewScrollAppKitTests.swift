@@ -81,13 +81,14 @@ struct ListViewScrollAppKitTests {
     }
 
     @Test
-    func verticalScrollerStaysAboveVisibleRows() throws {
+    func rowsLiveInTheNativeDocumentBelowScrollerChrome() throws {
         let listView = insetListView()
-        let scrollerContainer = try #require(listView.subviews.first { view in
-            view.subviews.contains { $0 is NSScroller }
-        })
+        let row = try #require(listView.rowView(for: 0))
 
-        #expect(listView.subviews.last === scrollerContainer)
+        #expect(row.superview === listView.contentDocumentView)
+        #expect(listView.contentDocumentView.superview === listView.nativeScrollView.contentView)
+        #expect(listView.nativeScrollView.superview === listView)
+        #expect(listView.nativeScrollView.verticalScroller != nil)
     }
 
     @Test
@@ -337,6 +338,72 @@ struct ListViewScrollAppKitTests {
         let shiftedRow = try #require(listView.rowView(for: 0))
         #expect(insertedRow.layer?.animationKeys()?.isEmpty == false)
         #expect(shiftedRow.layer?.animationKeys()?.isEmpty == false)
+
+        let scroller = try #require(listView.nativeScrollView.verticalScroller)
+        let scrollerKeys = Set(scroller.layer?.animationKeys() ?? [])
+        #expect(!scrollerKeys.contains("position"))
+        #expect(!scrollerKeys.contains("bounds"))
+        #expect(!scrollerKeys.contains("position.x"))
+    }
+
+    @Test
+    func semanticHeightChangeRetainsAndRestoresDownstreamPresentationIdentity() async throws {
+        let probe = HeightProbe()
+        let listView = makeListView(probe: probe, count: 3)
+        listView.contentOffset = .zero
+        listView.layoutSubtreeIfNeeded()
+
+        let departingRow = try #require(listView.rowView(for: 1))
+        listView.animateHeightChange(
+            forRowWithID: 0,
+            animation: .init(duration: 0.2)
+        ) {
+            probe.heights[0] = 300
+            listView.invalidateLayout(forRowWith: 0)
+        }
+
+        #expect(listView.rowView(for: 1) === departingRow)
+        #expect(departingRow.layer?.animationKeys()?.contains("ListViewKit.height.position") == true)
+        #expect(departingRow.layer?.animationKeys()?.allSatisfy {
+            !$0.localizedCaseInsensitiveContains("opacity")
+        } == true)
+
+        let transitionGeneration = listView.heightTransitionCleanupGeneration
+        listView.animateHeightChange(
+            forRowWithID: 0,
+            animation: .init(duration: 0.2)
+        ) {
+            // Most streaming tokens do not cross a line boundary. Such an
+            // update must not restart the transition already in flight.
+            listView.invalidateLayout(forRowWith: 0)
+        }
+        #expect(listView.heightTransitionCleanupGeneration == transitionGeneration)
+        #expect(listView.isHeightTransitionActive)
+
+        try await Task.sleep(for: .milliseconds(350))
+        listView.layoutSubtreeIfNeeded()
+        #expect(listView.rowView(for: 1) == nil)
+
+        listView.animateHeightChange(
+            forRowWithID: 0,
+            animation: .init(duration: 0.2)
+        ) {
+            probe.heights[0] = 100
+            listView.invalidateLayout(forRowWith: 0)
+        }
+
+        let returningRow = try #require(listView.rowView(for: 1))
+        #expect(returningRow === departingRow)
+        #expect(returningRow.placedFrame == listView.rectForRow(at: 1))
+        let animation = try #require(
+            returningRow.layer?.animation(forKey: "ListViewKit.height.position") as? CAKeyframeAnimation
+        )
+        let scale = NSScreen.main?.backingScaleFactor ?? 1
+        let values = try #require(animation.values as? [NSValue])
+        #expect(values.allSatisfy { value in
+            let scaledY = value.pointValue.y * scale
+            return abs(scaledY - scaledY.rounded()) <= 0.001
+        })
     }
 
     @Test

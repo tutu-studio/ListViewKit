@@ -14,7 +14,7 @@ about the same whether it holds ten rows or a hundred thousand.
 
 - Swift 6.0+
 - iOS 17.0+ / macCatalyst 17.0+ / macOS 14.0+
-- No dependencies beyond two small animation packages.
+- No runtime dependencies.
 
 ## Installation
 
@@ -188,6 +188,45 @@ list.invalidateLayout(forRowWith: message.id)
 Use `invalidateLayout()` only when every height may have changed, such as
 after replacing global typography.
 
+On AppKit, a visible expansion or collapse can be expressed as a semantic
+height transition. The changed row and its downstream rows move together;
+rows crossing the viewport boundary keep their presentation identity, and no
+opacity animation is added:
+
+```swift
+list.animateHeightChange(
+    forRowWithID: message.id,
+    animation: .init(duration: 0.25)
+) {
+    message.isExpanded.toggle()
+    list.update(message)
+}
+```
+
+### Preserving the viewport across structural changes
+
+Capture a stable row's position before prepending or removing content, apply
+the change, then translate the viewport by the row's coordinate difference:
+
+```swift
+let anchorY = list.rectForRow(with: anchorID).minY
+list.apply(olderMessages + messages)
+
+#if canImport(UIKit)
+list.layoutIfNeeded()
+#elseif canImport(AppKit)
+list.layoutSubtreeIfNeeded()
+#endif
+
+let deltaY = list.rectForRow(with: anchorID).minY - anchorY
+list.rebaseContentOffset(by: CGPoint(x: 0, y: deltaY))
+```
+
+Rebasing also translates an in-flight programmatic spring without cancelling
+it. On AppKit, native gesture and momentum state remains owned by
+`NSScrollView`; apply structural changes while native scrolling is idle when
+exact momentum-target preservation is required.
+
 ### Following streaming content
 
 ```swift
@@ -195,12 +234,13 @@ let shouldFollow = list.isScrolledToBottom(tolerance: 4)
 list.append(message)
 
 if shouldFollow, !list.isUserInteractingWithScroll {
-    list.scrollToBottom(animated: false)
+    list.scrollToBottom(animated: true)
 }
 ```
 
 `isUserInteractingWithScroll` includes platform momentum but excludes
-programmatic spring scrolling.
+programmatic spring scrolling. The animated call retargets the existing spring
+as more tokens arrive, so a growing final row follows the bottom smoothly.
 
 ### Scrolling to a row
 
@@ -212,17 +252,29 @@ list.scrollToBottom()
 
 ### The scroller
 
-A list whose content outgrows its viewport draws an overlay scroller. Hosts
-that would rather it did not say so with one sentence on either platform:
+A list whose content outgrows its viewport draws a platform overlay scroller.
+Hosts that would rather it did not say so with one sentence on either platform:
 
 ```swift
 list.showsVerticalScrollIndicator = false
 ```
 
-UIKit inherits the property from `UIScrollView`; the AppKit list declares its
-own, which also keeps the scroller's geometry pass from running at all. Either
-way this hides the report, not the range: everything still scrolls exactly as
-far as it did.
+UIKit inherits the property from `UIScrollView`; the AppKit list forwards it
+to its native `NSScrollView`. Either way this hides the report, not the range:
+everything still scrolls exactly as far as it did.
+
+On AppKit the complete hierarchy is native:
+
+```text
+NSScrollView
+└── NSClipView
+    └── ListDocumentView
+        └── reusable rows
+```
+
+AppKit owns wheel and trackpad gestures, momentum, elasticity, clipping, and
+scroller behaviour. Programmatic navigation keeps ListViewKit's retargetable
+spring so streaming bottom-follow behaves consistently across platforms.
 
 ## Migrating from 2.x
 
@@ -261,19 +313,22 @@ swift run -c release ListViewKitBenchmarks
 
 Measured on an Apple Silicon Mac, Release, 800×600 viewport, 100,000 rows:
 
-| | 2.x | 3.0 |
+| | 2.x | Current |
 | --- | ---: | ---: |
-| Initial layout | 362 ms | 42 ms |
-| 20k visible-range queries | 11.8 ms | 3.0 ms |
-| 20k content-offset writes | 503 ms | 21 ms |
-| 1k tail item updates | 33.7 ms | 9.7 ms |
+| Initial layout | 362 ms | 56.9 ms |
+| 20k visible-range queries | 11.8 ms | 2.2 ms |
+| 20k content-offset writes | 503 ms | 105 ms |
+| 1k tail item updates | 33.7 ms | 13.2 ms |
 | Appending one row | 225 ms | 0.03 ms |
-| Width reflow | 152 ms | 4.9 ms |
+| Width reflow | 152 ms | 6.4 ms |
+
+The AppKit offset-write path includes native `NSClipView` and scroller
+synchronization. It deliberately trades some synthetic write throughput for
+platform-owned gestures, momentum, elasticity, clipping, and accessibility.
 
 ## Examples
 
-- `Example/ListExample`: UIKit.
-- `Example/ListExampleMac`: AppKit, as a Swift package.
+- `Example/ListExample.xcworkspace`: UIKit (`ListExample`) and AppKit (`ListExampleMac`).
 
 ## License
 

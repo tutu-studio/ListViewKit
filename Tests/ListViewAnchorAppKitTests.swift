@@ -262,6 +262,11 @@ struct ListViewAnchorAppKitTests {
         // chase.
         #expect(listView.contentOffset.y == offsetBefore)
         #expect(listView.maximumContentOffset.y == offsetBefore + 100)
+
+        listView.scrollToBottom(animated: true)
+        #expect(listView.scrollingDisplayLink != nil)
+        #expect(listView.scrollingContext.y.target == listView.maximumContentOffset.y)
+        listView.cancelCurrentScrolling()
     }
 
     /// REPRO 4: a bottom-pinned list that shrinks stays pinned to the bottom

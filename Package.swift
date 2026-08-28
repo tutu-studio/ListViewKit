@@ -13,15 +13,9 @@ let package = Package(
     products: [
         .library(name: "ListViewKit", targets: ["ListViewKit"]),
     ],
-    dependencies: [
-        .package(url: "https://github.com/Lakr233/MSDisplayLink", from: "2.2.0"),
-    ],
     targets: [
         .target(
             name: "ListViewKit",
-            dependencies: [
-                "MSDisplayLink",
-            ],
             path: "Sources"
         ),
         .testTarget(

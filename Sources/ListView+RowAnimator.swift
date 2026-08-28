@@ -4,7 +4,6 @@
 //
 
 import Foundation
-import MSDisplayLink
 
 #if canImport(UIKit)
     import UIKit
@@ -13,38 +12,6 @@ import MSDisplayLink
 #else
     #error("ListViewKit requires UIKit or AppKit")
 #endif
-
-/// A display link that calls back without owning the thing it calls.
-///
-/// `DisplayLink` holds a single delegate, weakly, and `ListScrollView` has
-/// already claimed that slot for its own physics — a second link pointed at
-/// the same object could not say which of the two had fired. The proxy gives
-/// this link its own delegate, and it is retained here rather than by the
-/// link, which holds it weakly.
-@MainActor
-final class RowAnimatorDisplayLink {
-    private let link = DisplayLink()
-    private let proxy: Proxy
-
-    init(onTick: @escaping (DisplayLinkCallbackContext) -> Void) {
-        proxy = Proxy(onTick: onTick)
-        link.delegatingObject(proxy)
-    }
-
-    @MainActor
-    fileprivate final class Proxy {
-        let onTick: (DisplayLinkCallbackContext) -> Void
-        init(onTick: @escaping (DisplayLinkCallbackContext) -> Void) {
-            self.onTick = onTick
-        }
-    }
-}
-
-extension RowAnimatorDisplayLink.Proxy: @MainActor DisplayLinkDelegate {
-    func synchronization(context: DisplayLinkCallbackContext) {
-        onTick(context)
-    }
-}
 
 extension ListView {
     /// The longest frame the spring is integrated over.
@@ -276,8 +243,8 @@ extension ListView {
             return
         }
         guard rowAnimatorLink == nil else { return }
-        rowAnimatorLink = RowAnimatorDisplayLink { [weak self] context in
-            self?.tickRowAnimator(duration: context.duration)
+        rowAnimatorLink = NativeListDisplayLink(attachedTo: self) { [weak self] duration in
+            self?.tickRowAnimator(duration: duration)
         }
     }
 

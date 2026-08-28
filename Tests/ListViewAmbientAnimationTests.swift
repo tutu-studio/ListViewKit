@@ -316,6 +316,10 @@ struct ListViewAmbientAnimationTests {
             }
 
             #expect(animationKeys(of: overlay).isEmpty)
+            let scroller = try #require(listView.nativeScrollView.verticalScroller)
+            let scrollerKeys = animationKeys(of: scroller)
+            #expect(!scrollerKeys.contains("position"))
+            #expect(!scrollerKeys.contains("bounds"))
         }
     #endif
 

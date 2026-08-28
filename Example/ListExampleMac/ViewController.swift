@@ -107,11 +107,16 @@ final class ViewController: NSViewController {
             for character in text {
                 try? await Task.sleep(for: .milliseconds(5))
                 item.text.append(character)
-                listView.update(item)
+                listView.animateHeightChange(
+                    forRowWithID: item.id,
+                    animation: .init(duration: 0.2)
+                ) {
+                    listView.update(item)
+                }
                 // A reader who has scrolled away — or who just did, or who is
                 // resizing the window — is left where they are.
                 if gatesAutoScroll, listView.isUserInteractingWithScroll { continue }
-                listView.scrollToBottom(animated: false)
+                listView.scrollToBottom(animated: true)
             }
         }
     }

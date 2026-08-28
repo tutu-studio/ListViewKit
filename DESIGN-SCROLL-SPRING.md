@@ -1,5 +1,9 @@
 # 滚动阻尼：iMessage 式的弹性间隙
 
+> 当前分支仍采用本文设计的 `ListRowAnimator` / `ListBouncyAnimator` 表现层，
+> 但 AppKit viewport 已改由原生 `NSScrollView` 驱动。下文关于自定义
+> `AppKitScrollPhysics` 的部分仅是上游 3.x/4.x 实现记录，不再描述当前滚动层。
+
 DESIGN.md 第 5 节路线图的第 9 步。本文是这一步的施工图。
 
 本稿是第二版。第一版被一次对着源码的逐条复核推翻了三个地方：位移的落地方式、
@@ -352,12 +356,13 @@ row i 自己就会动一点（`|c − a|` 是它中心到锚点的距离，通�
             原生拖拽、惯性、回弹全部没有 ListViewKit 的 link
             —— 那些阶段只体现为 isTracking / isDragging / isDecelerating
 
-   AppKit   物理是自己写的，回弹 / 惯性 / 程序化滚动都会建 link
-            直接拖拽（scrollWheel 事件驱动）没有 link
+   AppKit   scrollingDisplayLink 也只在 scroll(to:) 的程序化滚动期间存在
+            原生滚轮、触控板惯性和弹性全部由 NSScrollView 驱动
+            —— 那些阶段通过 native live-scroll 生命周期报告所有权
 ```
 
-两端的共同点只有一条：**直接拖拽期间没有 link**。「惯性和回弹都有 link」
-只对 AppKit 成立，UIKit 那半是原生的，采样规则必须单独覆盖（§3.3）。
+两端都只为程序化 spring 建 link；用户滚动完全由各自的原生 scroll view
+驱动。采样仍要覆盖两端不同的原生交互状态（§3.3）。
 
 弹簧不能挂在 `layoutContent()` 上。两个原因：
 
@@ -373,12 +378,10 @@ row i 自己就会动一点（`|c − a|` 是它中心到锚点的距离，通�
 
 所以弹簧自己拥有一条 display link，与 `scrollingDisplayLink` 完全独立：
 
-- UIKit：一条独立的 `CADisplayLink`。**不能用 `CADisplayLink(target: self,)`**——
-  run loop 强引用 link、link 强引用 target，现有代码靠 `cancelCurrentScrolling()`
-  的显式 invalidate 兜住，而这条 link 的存活由用户代码的 `wantsNextFrame` 决定，
-  兜不住。用一个持有弱引用的私有 proxy 做 target。
-- AppKit：`MSDisplayLink.DisplayLink` 只有一个 `delegatingObject`，第二条 link
-  委派到同一个对象会跟滚动动画的回调撞在一起。同样需要私有转发壳。
+- UIKit：一条独立的原生 `CADisplayLink`，以私有 proxy 作为 target，避免
+  run loop → link → list 的强引用环。
+- AppKit：由 `NSView.displayLink(target:selector:)` 创建原生 `CADisplayLink`，
+  自动跟随 View 所在屏幕，并在隐藏或离屏时暂停；同样通过私有 proxy 回调。
 
 **生命周期**（§7.5 的完整规则）：
 

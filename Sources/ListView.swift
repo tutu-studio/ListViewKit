@@ -51,6 +51,12 @@ public final class ListView<Item: Identifiable & Hashable & SendableMetatype>: L
 
     private var prototypes: [Int: Prototype] = [:]
     private var rowsPendingRemoval: [ListRowView] = []
+    /// Keeps presentation identities mounted until a semantic height
+    /// transition has finished, including rows that temporarily leave the
+    /// viewport while the changed row grows.
+    var isHeightTransitionActive = false
+    var heightTransitionCleanupGeneration: UInt64 = 0
+
     /// Rows placed this pass, still holding the previous item's arrangement.
     private var rowsPendingSettle: [ListRowView] = []
 
@@ -83,7 +89,7 @@ public final class ListView<Item: Identifiable & Hashable & SendableMetatype>: L
     }
 
     /// Runs the animator a frame at a time while it says it has more to do.
-    var rowAnimatorLink: RowAnimatorDisplayLink?
+    var rowAnimatorLink: NativeListDisplayLink?
 
     /// Whether the list is currently inside the animator.
     ///
@@ -375,7 +381,9 @@ public final class ListView<Item: Identifiable & Hashable & SendableMetatype>: L
         measureViewport()
         contentSize = supposedContentSize
 
-        if contentOffset.y >= minimumContentOffset.y, contentOffset.y <= maximumContentOffset.y {
+        if contentOffset.y >= minimumContentOffset.y,
+           contentOffset.y <= maximumContentOffset.y,
+           !isHeightTransitionActive {
             recycleRowsOutsideViewport()
         }
         prepareVisibleRows()
@@ -416,7 +424,7 @@ public final class ListView<Item: Identifiable & Hashable & SendableMetatype>: L
         let pending = rowsPendingSettle
         rowsPendingSettle.removeAll(keepingCapacity: true)
         withoutListAnimation {
-            for view in pending where view.superview === self {
+            for view in pending where view.superview === rowContainerView {
                 view.layoutNow()
             }
         }
@@ -435,9 +443,10 @@ public final class ListView<Item: Identifiable & Hashable & SendableMetatype>: L
     /// only says it was not scrolling; it does nothing for an animator holding
     /// a position from an earlier frame, since that position is stated in a
     /// coordinate space that has just moved underneath it.
-    override func compensateScrollOffset(by dy: CGFloat) {
-        super.compensateScrollOffset(by: dy)
-        guard dy != 0, rowAnimator != nil else { return }
+    override public func rebaseContentOffset(by delta: CGPoint) {
+        guard delta.x.isFinite, delta.y.isFinite, delta != .zero else { return }
+        super.rebaseContentOffset(by: delta)
+        guard delta.y != 0, rowAnimator != nil else { return }
         // Saved and restored rather than cleared. Compensation can be reached
         // from inside the animator — measurement runs during a layout an
         // implementation asked for — and clearing the flag on the way out of
@@ -446,7 +455,7 @@ public final class ListView<Item: Identifiable & Hashable & SendableMetatype>: L
         let wasRunning = isDrivingRowAnimator
         isDrivingRowAnimator = true
         defer { isDrivingRowAnimator = wasRunning }
-        rowAnimator?.rebase(byContentOffset: dy)
+        rowAnimator?.rebase(byContentOffset: delta.y)
     }
 
     private func measureViewport() {
@@ -494,7 +503,7 @@ public final class ListView<Item: Identifiable & Hashable & SendableMetatype>: L
         #endif
     }
 
-    private func layoutNow() {
+    func layoutNow() {
         #if canImport(UIKit)
             layoutIfNeeded()
         #elseif canImport(AppKit)
@@ -527,14 +536,14 @@ public final class ListView<Item: Identifiable & Hashable & SendableMetatype>: L
         // happen inside a caller's animation.
         withoutListAnimation { view.isHidden = true }
         view.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(view)
+        rowContainerView.addSubview(view)
         let width = view.widthAnchor.constraint(equalToConstant: bounds.width)
         // Position is pinned only so Auto Layout has no ambiguity to warn
         // about; nothing ever reads this view's origin.
         NSLayoutConstraint.activate([
             width,
-            view.topAnchor.constraint(equalTo: topAnchor),
-            view.leadingAnchor.constraint(equalTo: leadingAnchor),
+            view.topAnchor.constraint(equalTo: rowContainerView.topAnchor),
+            view.leadingAnchor.constraint(equalTo: rowContainerView.leadingAnchor),
         ])
         let prototype = Prototype(view: view, width: width)
         prototypes[registrationIndex] = prototype
@@ -580,8 +589,8 @@ public final class ListView<Item: Identifiable & Hashable & SendableMetatype>: L
         )
         view.requestLayout()
         visibleRows[item.id] = (view, registrationIndex)
-        if view.superview !== self {
-            addSubview(view)
+        if view.superview !== rowContainerView {
+            rowContainerView.addSubview(view)
         }
     }
 

@@ -7,7 +7,11 @@
     import UIKit
 
     open class ListScrollView: UIScrollView {
-        var scrollingDisplayLink: CADisplayLink?
+        var rowContainerView: UIView {
+            self
+        }
+
+        var scrollingDisplayLink: NativeListDisplayLink?
         var scrollingContext = SoftSpring2D(angularFrequency: 10, dampingRatio: 1, threshold: 0.05)
         var scrollingTik: CFTimeInterval = .init()
         private var scrollingTarget: CGPoint?
@@ -31,7 +35,9 @@
         /// `UIScrollView` bounces as part of decelerating, which ownership
         /// already reports. Mirrors the AppKit property so the gate needs no
         /// platform split.
-        var isReboundingFromOverscroll: Bool { false }
+        var isReboundingFromOverscroll: Bool {
+            false
+        }
 
         /// Where the finger currently holds the content, measured from the
         /// viewport's top edge, or `nil` when no finger is down.
@@ -170,12 +176,10 @@
             scrollingTarget = target
 
             guard scrollingDisplayLink == nil else { return }
-            scrollingDisplayLink = CADisplayLink(target: self, selector: #selector(handleScrollingAnimation(_:)))
-            // Minimum 60, not 80: a 60 Hz display cannot satisfy an 80 floor,
-            // and the range should always contain a rate the hardware has.
-            scrollingDisplayLink?.preferredFrameRateRange = .init(minimum: 60, maximum: 120, preferred: 120)
+            scrollingDisplayLink = NativeListDisplayLink(attachedTo: self) { [weak self] _ in
+                self?.handleScrollingAnimation()
+            }
             scrollingTik = CACurrentMediaTime()
-            scrollingDisplayLink?.add(to: .main, forMode: .common)
         }
 
         public func cancelCurrentScrolling() {
@@ -190,32 +194,41 @@
             scrollingDisplayLink = nil
         }
 
-        /// Shifts the current offset and any in-flight programmatic scroll by
-        /// `dy` without cancelling it. Deferred height correction uses this so
-        /// rows above the viewport can change size while visible rows stay
-        /// visually stationary.
-        func compensateScrollOffset(by dy: CGFloat) {
-            guard dy != 0 else { return }
-            // The whole point of this shift is that the reader cannot see it.
-            // Animating it is exactly how it becomes visible — and by the same
-            // argument it is not travel a row animator may spring on.
-            scrollLedger.exclude(dy)
-            withoutListAnimation { super.contentOffset.y += dy }
-            if var target = scrollingTarget {
-                target.y += dy
-                scrollingTarget = target
+        /// Translates the viewport and any in-flight programmatic spring after
+        /// content coordinates change, without classifying the shift as travel.
+        open func rebaseContentOffset(by delta: CGPoint) {
+            guard delta.x.isFinite, delta.y.isFinite, delta != .zero else { return }
+
+            scrollLedger.exclude(delta.y)
+            withoutListAnimation {
+                super.contentOffset = .init(
+                    x: super.contentOffset.x + delta.x,
+                    y: super.contentOffset.y + delta.y
+                )
+            }
+            if let target = scrollingTarget {
+                let translatedTarget = CGPoint(x: target.x + delta.x, y: target.y + delta.y)
                 scrollingContext.setCurrent(
-                    .init(x: scrollingContext.x.value, y: scrollingContext.y.value + dy),
+                    .init(
+                        x: scrollingContext.x.value + delta.x,
+                        y: scrollingContext.y.value + delta.y
+                    ),
                     vel: .init(
                         x: scrollingContext.x.velocity,
                         y: scrollingContext.y.velocity
                     )
                 )
-                scrollingContext.setTarget(.init(x: ceil(target.x), y: ceil(target.y)))
+                scrollingContext.setTarget(translatedTarget)
+                scrollingTarget = translatedTarget
             }
         }
 
-        @objc func handleScrollingAnimation(_: CADisplayLink) {
+        /// Deferred height correction is the vertical form of public rebasing.
+        func compensateScrollOffset(by dy: CGFloat) {
+            rebaseContentOffset(by: .init(x: 0, y: dy))
+        }
+
+        func handleScrollingAnimation() {
             if isTracking || scrollingContext.completed {
                 cancelCurrentScrolling()
                 return
@@ -288,370 +301,176 @@
 
 #elseif canImport(AppKit)
     import AppKit
-    import MSDisplayLink
 
-    enum AppKitScrollPhysics {
-        // AppKit exports distinct hyperbolic coefficients for trackpads and
-        // touch input. macOS trackpad scrolling uses 0.075; 0.55 is the touch
-        // coefficient used by UIKit-style rubber banding.
-        static let rubberBandCoefficient: CGFloat = 0.075
-        static let reboundAmplitude: CGFloat = 0.31
-        static let reboundPeriod: TimeInterval = 1.6
-        static let reboundStiffness: CGFloat = 20
-        static let maximumReboundVelocity: CGFloat = 20_000
-
-        static func elasticDelta(forReboundDelta delta: CGFloat, dimension: CGFloat) -> CGFloat {
-            guard dimension > 0 else { return 0 }
-            let magnitude = abs(delta)
-            let elasticMagnitude = dimension * magnitude * rubberBandCoefficient
-                / (dimension + magnitude * rubberBandCoefficient)
-            return delta < 0 ? -elasticMagnitude : elasticMagnitude
-        }
-
-        static func reboundDelta(forElasticDelta delta: CGFloat, dimension: CGFloat) -> CGFloat {
-            guard dimension > 0 else { return 0 }
-            let magnitude = abs(delta)
-            guard magnitude < dimension else { return delta }
-            let reboundMagnitude = magnitude * dimension
-                / (rubberBandCoefficient * (dimension - magnitude))
-            return delta < 0 ? -reboundMagnitude : reboundMagnitude
-        }
-
-        /// Matches `_NSElasticDeltaForTimeDelta` without linking private SPI.
-        static func elasticDelta(
-            initialPosition: CGFloat,
-            initialVelocity: CGFloat,
-            elapsedTime: TimeInterval
-        ) -> CGFloat {
-            let clampedVelocity = min(
-                maximumReboundVelocity,
-                max(-maximumReboundVelocity, initialVelocity)
-            )
-            let decay = exp(-elapsedTime * reboundStiffness / reboundPeriod)
-            return (initialPosition - elapsedTime * clampedVelocity * reboundAmplitude) * decay
-        }
-
-        static func momentumDuration(initialVelocity: CGFloat) -> TimeInterval {
-            guard initialVelocity != 0 else { return 0 }
-            return cbrt(abs(initialVelocity) / 4_000)
-        }
-
-        static func momentumDisplacement(
-            initialVelocity: CGFloat,
-            elapsedTime: TimeInterval,
-            duration: TimeInterval
-        ) -> CGFloat {
-            guard duration > 0 else { return 0 }
-            let progress = min(1, max(0, elapsedTime / duration))
-            let remainingVelocityFraction = pow(1 - progress, 4)
-            return initialVelocity * duration / 4 * (1 - remainingVelocityFraction)
-        }
-
-        static func momentumVelocity(
-            initialVelocity: CGFloat,
-            elapsedTime: TimeInterval,
-            duration: TimeInterval
-        ) -> CGFloat {
-            guard duration > 0 else { return 0 }
-            let progress = min(1, max(0, elapsedTime / duration))
-            return initialVelocity * pow(1 - progress, 3)
-        }
-
-        static func roundToDevicePixelTowardZero(_ value: CGFloat) -> CGFloat {
-            var value = value
-            let roundedValue = round(value)
-            if abs(value - roundedValue) < 0.125 {
-                value = roundedValue
-            }
-            return value > 0 ? ceil(value - 0.5) : floor(value + 0.5)
+    final class ListDocumentView: NSView {
+        override var isFlipped: Bool {
+            true
         }
     }
 
-    private final class ListOverlayScroller: NSScroller {
+    final class NativeListScrollView: NSScrollView {
         weak var owner: ListScrollView?
-        weak var overlay: ListScrollerOverlay?
-
-        override class var isCompatibleWithOverlayScrollers: Bool {
-            self == ListOverlayScroller.self
-        }
-
-        override func mouseDown(with event: NSEvent) {
-            owner?.verticalScrollerTrackingDidBegin()
-            overlay?.isHandlingScrollerInteraction = true
-            defer {
-                overlay?.isHandlingScrollerInteraction = false
-                owner?.verticalScrollerTrackingDidEnd()
-            }
-            super.mouseDown(with: event)
-        }
-    }
-
-    private final class ListScrollerDocumentView: NSView {
-        override var isFlipped: Bool { true }
-    }
-
-    private final class ListScrollerOverlay: NSScrollView {
-        weak var owner: ListScrollView?
-        var isSynchronizing = false
-        /// True only while NSScroller itself owns a mouse interaction. Wheel
-        /// observation must never feed the driver's private offset back into the list.
-        var isHandlingScrollerInteraction = false
-
-        override func hitTest(_ point: NSPoint) -> NSView? {
-            guard !isHidden, let hitView = super.hitTest(point),
-                  let verticalScroller
-            else { return nil }
-            return hitView === verticalScroller || hitView.isDescendant(of: verticalScroller)
-                ? hitView
-                : nil
-        }
 
         override func scrollWheel(with event: NSEvent) {
-            owner?.scrollWheel(with: event)
-        }
-
-        func observeScrollWheel(_ event: NSEvent) {
-            guard !isHidden else { return }
-            // AppKit needs the real event to drive overlay visibility and its
-            // native elastic knob. Driver offsets never flow back unless the
-            // user is directly interacting with NSScroller.
-            isSynchronizing = true
-            defer { isSynchronizing = false }
+            owner?.nativeScrollWheelWillBegin(event)
+            defer { owner?.nativeScrollWheelDidEnd(event) }
             super.scrollWheel(with: event)
-        }
-
-        override func reflectScrolledClipView(_ clipView: NSClipView) {
-            super.reflectScrolledClipView(clipView)
-            guard clipView === contentView,
-                  !isSynchronizing,
-                  isHandlingScrollerInteraction
-            else { return }
-            owner?.nativeScrollerDidScroll(to: clipView.bounds.origin.y)
         }
     }
 
+    /// An AppKit list viewport backed by one native `NSScrollView` hierarchy.
+    ///
+    /// AppKit owns wheel and trackpad gestures, momentum, elasticity, clipping,
+    /// and scroller behaviour. ListViewKit keeps only its retargetable spring
+    /// for programmatic scrolling.
     open class ListScrollView: NSView {
         override open var isFlipped: Bool {
             true
         }
 
-        /// Whether the list draws a scroller.
-        ///
-        /// Named after `UIScrollView`'s property, which the UIKit side of this
-        /// class inherits for real, so a host that wants no scroller says the
-        /// same sentence on both platforms.
-        ///
-        /// This is one more reason *not* to show a scroller, not a second
-        /// mechanism: it feeds the same geometry pass that already decides
-        /// whether the content is long enough to warrant one, so turning it
-        /// off also stops that pass from tiling a scroller nobody can see.
-        open var showsVerticalScrollIndicator: Bool = true {
-            didSet {
-                guard showsVerticalScrollIndicator != oldValue else { return }
-                needsLayout = true
-            }
+        let nativeScrollView = NativeListScrollView(frame: .zero)
+        let contentDocumentView = ListDocumentView(frame: .zero)
+        var rowContainerView: NSView {
+            contentDocumentView
         }
 
-        var scrollingDisplayLink: DisplayLink?
+        private var _contentSize: CGSize = .zero
+        private var isNativeLiveScrollActive = false
+        private var excludesNativeOffsetTravel = false
+        private var lastObservedNativeOffsetY: CGFloat = 0
+        private var _lastScrollWheelViewportY: CGFloat?
+        private var _isTracking = false
+        private var _isVerticalScrollerTracking = false
+
+        var scrollingDisplayLink: NativeListDisplayLink?
         var scrollingContext = SoftSpring2D(angularFrequency: 16, dampingRatio: 1, threshold: 0.05)
-        var scrollingTik: CFTimeInterval = .init()
         private var scrollingTarget: CGPoint?
 
         var scrollLedger = ScrollLedger()
 
-        private var _contentOffset: CGPoint = .zero
-        private var _contentSize: CGSize = .zero
-
-        /// Whether the user is currently interacting with scroll (trackpad/mouse).
-        /// Internal (not private) so integration tests can simulate a grip.
-        var _isTracking: Bool = false
-        var isTracking: Bool {
-            _isTracking || _momentumAnimation != nil || _isVerticalScrollerTracking
-        }
-
-        /// Raw (un-rubber-banded) Y offset during user scroll tracking.
-        /// Delta is always applied to this value; rubber-band is applied only for display.
-        private var _trackingRawOffsetY: CGFloat = 0
-
-        /// Where the pointer last delivered a scroll event, measured from the
-        /// viewport's top edge. See the UIKit twin for why viewport-relative.
-        ///
-        /// Kept after the gesture ends: unlike a lifted finger, the pointer is
-        /// still on screen, and the next wheel event will land in nearly the
-        /// same place.
-        private var _lastScrollWheelViewportY: CGFloat?
-        var interactionLocationInViewportY: CGFloat? { _lastScrollWheelViewportY }
-
-        /// True while AppKit-style overscroll rebound is active.
-        private var _isBouncing: Bool = false
-
-        /// True while native momentum events are superseded by ListViewKit's
-        /// AppKit-matched momentum or rebound animation.
-        private var _ignoresMomentumEvents: Bool = false
-
-        /// True while the running programmatic scroll belongs to a discrete
-        /// wheel — the clamp back in bounds after its notches overran an edge.
-        /// Its motion is excluded from travel the same way the notches were:
-        /// rows that stayed rigid through the scroll must not spring on the
-        /// way back.
-        private var _scrollAnimationIsExcludedFromTravel: Bool = false
-
-        /// Estimated raw scroll velocity (points/sec) for momentum and rebound handoff.
-        private var _scrollVelocityY: CGFloat = 0
-        private var _prevScrollTime: CFTimeInterval = 0
-        private var _lastVelocitySampleTime: CFTimeInterval = 0
-
-        private struct MomentumAnimation {
-            var initialOffset: CGPoint
-            let initialVelocityY: CGFloat
-            let duration: TimeInterval
-            var elapsedTime: TimeInterval = 0
-        }
-
-        private var _momentumAnimation: MomentumAnimation?
-
-        private struct RubberBandAnimation {
-            var targetOffset: CGPoint
-            let initialPositionY: CGFloat
-            let initialVelocityY: CGFloat
-            var elapsedTime: TimeInterval = 0
-        }
-
-        private var _rubberBandAnimation: RubberBandAnimation?
-
-        private let scrollerOverlay = ListScrollerOverlay(frame: .zero)
-        private let scrollerDocumentView = ListScrollerDocumentView(frame: .zero)
-        private var _isVerticalScrollerTracking = false
-
-        /// Everything ``applyScrollerGeometry(_:)`` reads. Re-tiling an
-        /// `NSScrollView` walks the view tree, re-runs Auto Layout, and
-        /// re-derives scroller metrics — an order of magnitude more work than
-        /// a scroll frame's own layout. None of it depends on the content
-        /// offset, so the pass runs only when one of these inputs moves.
-        private struct ScrollerGeometry: Equatable {
-            var boundsSize: CGSize
-            /// Normalized to zero while hidden so a growing content size cannot
-            /// re-tile a scroller nobody can see.
-            var scrollableRange: CGFloat
-            var showsScroller: Bool
-            /// Padding that keeps overlay knob endpoints clear of rounded
-            /// window corners, already netted against the overlay's own safe
-            /// area so an underlapping titlebar is not counted twice.
-            var knobEndpointInsets: (top: CGFloat, bottom: CGFloat)
-
-            static func == (lhs: Self, rhs: Self) -> Bool {
-                lhs.boundsSize == rhs.boundsSize
-                    && lhs.scrollableRange == rhs.scrollableRange
-                    && lhs.showsScroller == rhs.showsScroller
-                    && lhs.knobEndpointInsets == rhs.knobEndpointInsets
+        /// Whether the list asks AppKit to draw its vertical scroller.
+        /// Scrolling remains enabled when the indicator is hidden.
+        open var showsVerticalScrollIndicator: Bool = true {
+            didSet {
+                guard showsVerticalScrollIndicator != oldValue else { return }
+                nativeScrollView.hasVerticalScroller = showsVerticalScrollIndicator
+                nativeScrollView.tile()
             }
         }
 
-        private var appliedScrollerGeometry: ScrollerGeometry?
-
-        /// Overlay placement already applied: where the chrome was pinned, and
-        /// where the knob sits inside its track. Both derive from the content
-        /// offset and the insets, so comparing them also answers "did the
-        /// content move, should the overlay flash".
-        private var appliedScrollerPlacement: (origin: CGPoint, knobOffsetY: CGFloat)?
-
-        /// Number of times the expensive geometry pass actually ran. Tests use
-        /// this to prove that scrolling alone does not re-tile the scroller.
-        private(set) var scrollerGeometryPassCount: Int = 0
-
         open var contentInsets: NSEdgeInsets = .init() {
-            didSet { needsLayout = true }
-        }
-
-        /// While set, an offset that a content-size change pushed out of
-        /// bounds travels to its new home instead of snapping there. A caller
-        /// animating its rows has to move the viewport along with them, or the
-        /// correction reads as a jump in the middle of the animation.
-        var animatesContentSizeCorrection = false
-
-        /// See ``suppressAutoScroll()``.
-        public private(set) var isAutoScrollSuppressed = false
-
-        /// The viewport size the previous layout pass ran against. Offsets
-        /// route through layout too, so a resize is only recognisable by
-        /// comparing against what was laid out last.
-        var lastLaidOutViewportSize: CGSize?
-
-        /// True while the rebound curve is still carrying the content back to
-        /// an edge.
-        ///
-        /// Deliberately not part of ``isScrollOffsetOwnedByUser``: a rebound
-        /// carries a `scrollingTarget`, and the clamp has to stay free to
-        /// retarget that onto an edge the content moved.
-        var isReboundingFromOverscroll: Bool { _isBouncing }
-
-        /// The minimum point (in content view coordinates) that the view can be scrolled.
-        public var minimumContentOffset: CGPoint {
-            .init(x: -contentInsets.left, y: -contentInsets.top)
-        }
-
-        /// The maximum point (in content view coordinates) that the view can be scrolled.
-        public var maximumContentOffset: CGPoint {
-            let min = minimumContentOffset
-            return .init(
-                x: ceil(max(min.x, _contentSize.width - bounds.width + contentInsets.right)),
-                y: ceil(max(min.y, _contentSize.height - bounds.height + contentInsets.bottom))
-            )
-        }
-
-        /// The content offset of the scroll view, analogous to UIScrollView.contentOffset.
-        open var contentOffset: CGPoint {
-            get { _contentOffset }
-            set {
-                guard _contentOffset != newValue else { return }
-                _contentOffset = newValue
-                setBoundsOrigin(newValue)
+            didSet {
+                nativeScrollView.contentInsets = contentInsets
                 needsLayout = true
             }
         }
 
-        /// The total content size, analogous to UIScrollView.contentSize.
+        /// While set, an offset pushed out of bounds by an animated content
+        /// change travels to its new edge instead of being corrected outright.
+        var animatesContentSizeCorrection = false
+
+        public private(set) var isAutoScrollSuppressed = false
+        var lastLaidOutViewportSize: CGSize?
+        var isReboundingFromOverscroll: Bool {
+            false
+        }
+
+        /// Native live scrolling includes AppKit-owned momentum.
+        var isTracking: Bool {
+            isNativeLiveScrollActive || _isTracking || _isVerticalScrollerTracking
+        }
+
+        var interactionLocationInViewportY: CGFloat? {
+            _lastScrollWheelViewportY
+        }
+
+        public var minimumContentOffset: CGPoint {
+            .init(x: -contentInsets.left, y: -contentInsets.top)
+        }
+
+        public var maximumContentOffset: CGPoint {
+            let minimum = minimumContentOffset
+            return .init(
+                x: ceil(max(minimum.x, _contentSize.width - bounds.width + contentInsets.right)),
+                y: ceil(max(minimum.y, _contentSize.height - bounds.height + contentInsets.bottom))
+            )
+        }
+
+        /// The native clip-view origin, exposed with the UIKit-compatible name.
+        open var contentOffset: CGPoint {
+            get { nativeScrollView.contentView.bounds.origin }
+            set {
+                guard contentOffset != newValue else { return }
+                applyContentOffset(newValue)
+            }
+        }
+
+        /// The complete native document size.
         open var contentSize: CGSize {
             get { _contentSize }
             set {
-                if _contentSize != newValue {
-                    let currentOffset = contentOffset
-                    _contentSize = newValue
-                    applyContentOffset(currentOffset)
+                let normalized = CGSize(width: max(0, newValue.width), height: max(0, newValue.height))
+                if _contentSize != normalized {
+                    let previousOffset = contentOffset
+                    _contentSize = normalized
+                    performExcludingNativeOffsetTravel {
+                        // Same as UIKit's `contentSize` setter: the write is a
+                        // correction, and AppKit would otherwise inherit the
+                        // list's row-slide context and interpolate the overlay
+                        // scroller onto the trailing edge.
+                        withoutListAnimation {
+                            contentDocumentView.frame = CGRect(origin: .zero, size: normalized)
+                        }
+                        applyContentOffset(previousOffset)
+                    }
                     needsLayout = true
                 }
                 reconcileOffsetWithContentSize()
             }
         }
 
-        /// Analogous to UIScrollView.adjustedContentInset for cross-platform code.
         var adjustedContentInset: NSEdgeInsets {
             contentInsets
         }
 
         override public init(frame: CGRect) {
             super.init(frame: frame)
+
             wantsLayer = true
+            nativeScrollView.owner = self
+            nativeScrollView.drawsBackground = false
+            nativeScrollView.contentView.drawsBackground = false
+            nativeScrollView.borderType = .noBorder
+            nativeScrollView.hasHorizontalScroller = false
+            nativeScrollView.scrollerStyle = .overlay
+            nativeScrollView.hasVerticalScroller = true
+            nativeScrollView.autohidesScrollers = true
+            nativeScrollView.verticalScrollElasticity = .allowed
+            nativeScrollView.horizontalScrollElasticity = .none
+            nativeScrollView.automaticallyAdjustsContentInsets = false
+            nativeScrollView.documentView = contentDocumentView
+            addSubview(nativeScrollView)
 
-            let verticalScroller = ListOverlayScroller(frame: .zero)
-            verticalScroller.owner = self
-            verticalScroller.overlay = scrollerOverlay
-            verticalScroller.scrollerStyle = .overlay
-            verticalScroller.controlSize = .regular
-
-            scrollerOverlay.owner = self
-            scrollerOverlay.borderType = .noBorder
-            scrollerOverlay.drawsBackground = false
-            scrollerOverlay.contentView.drawsBackground = false
-            scrollerOverlay.hasHorizontalScroller = false
-            scrollerOverlay.hasVerticalScroller = true
-            scrollerOverlay.verticalScrollElasticity = .allowed
-            scrollerOverlay.verticalScroller = verticalScroller
-            scrollerOverlay.scrollerStyle = .overlay
-            scrollerOverlay.autohidesScrollers = true
-            scrollerOverlay.documentView = scrollerDocumentView
-            addSubview(scrollerOverlay)
-            updateVerticalScroller()
+            nativeScrollView.contentView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(nativeClipViewBoundsDidChange(_:)),
+                name: NSView.boundsDidChangeNotification,
+                object: nativeScrollView.contentView
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(nativeLiveScrollDidBegin(_:)),
+                name: NSScrollView.willStartLiveScrollNotification,
+                object: nativeScrollView
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(nativeLiveScrollDidEnd(_:)),
+                name: NSScrollView.didEndLiveScrollNotification,
+                object: nativeScrollView
+            )
+            lastObservedNativeOffsetY = contentOffset.y
         }
 
         @available(*, unavailable)
@@ -659,171 +478,49 @@
             fatalError()
         }
 
-        override open func layout() {
-            super.layout()
-            // Before `layoutContent`, so the content-size change it makes
-            // already sees the suppression.
-            suppressAutoScrollIfViewportResized()
-            // Every offset write marks this view for layout, so this is where
-            // travel is counted, whichever of the physics produced it.
-            scrollLedger.accrue(offsetY: contentOffset.y)
-            layoutContent()
-            // After `layoutContent`, which may have changed `contentSize`.
-            // AppKit will not re-enter `layout()` for an invalidation raised
-            // from inside it, so a scroller synced first would stay stale.
-            updateVerticalScroller()
+        deinit {
+            scrollingDisplayLink?.invalidate()
+            NotificationCenter.default.removeObserver(self)
         }
 
-        /// Where a subclass lays out its content. Runs inside the same layout
-        /// pass that refreshes the scroller.
+        override open func layout() {
+            super.layout()
+            suppressAutoScrollIfViewportResized()
+            if nativeScrollView.frame != bounds {
+                withoutListAnimation { nativeScrollView.frame = bounds }
+            }
+            scrollLedger.accrue(offsetY: contentOffset.y)
+            layoutContent()
+        }
+
         func layoutContent() {}
 
-        override open func didAddSubview(_ subview: NSView) {
-            super.didAddSubview(subview)
-            guard subview !== scrollerOverlay, scrollerOverlay.superview === self else { return }
-            addSubview(scrollerOverlay, positioned: .above, relativeTo: subview)
+        /// The native scroll view normally receives wheel events through hit
+        /// testing. Forward events sent to the wrapper as well, which keeps
+        /// responder-chain forwarding and direct host integrations native.
+        override open func scrollWheel(with event: NSEvent) {
+            nativeScrollView.scrollWheel(with: event)
         }
 
         func isContentOffsetWithinBounds(offset: CGPoint) -> Bool {
-            let min = minimumContentOffset
-            let max = maximumContentOffset
-            return true
-                && offset.x >= min.x && offset.x <= max.x
-                && offset.y >= min.y && offset.y <= max.y
+            let minimum = minimumContentOffset
+            let maximum = maximumContentOffset
+            return offset.x >= minimum.x && offset.x <= maximum.x
+                && offset.y >= minimum.y && offset.y <= maximum.y
         }
 
         func nearestScrollLocationInBounds(offset: CGPoint) -> CGPoint {
-            let min = minimumContentOffset
-            let max = maximumContentOffset
+            let minimum = minimumContentOffset
+            let maximum = maximumContentOffset
             return .init(
-                x: CGFloat.minimum(CGFloat.maximum(min.x, offset.x), max.x),
-                y: CGFloat.minimum(CGFloat.maximum(min.y, offset.y), max.y)
+                x: min(maximum.x, max(minimum.x, offset.x)),
+                y: min(maximum.y, max(minimum.y, offset.y))
             )
         }
 
-        /// Brings the overlay scroller in line with the current content. Driven
-        /// from ``layout()``, so any number of offset writes within one frame
-        /// cost a single update.
-        private func updateVerticalScroller() {
-            let minOffset = minimumContentOffset.y
-            let scrollableRange = maximumContentOffset.y - minOffset
-            let showsScroller = showsVerticalScrollIndicator
-                && scrollableRange > 0
-                && bounds.height > 0
-
-            // NSScrollView already applies its own safe area when tiling the
-            // scroller, so only the remainder is ours to add.
-            let endpointInset = ceil(NSScroller.scrollerWidth(
-                for: .regular,
-                scrollerStyle: .overlay
-            ) / 2)
-            let safeAreaInsets = scrollerOverlay.safeAreaInsets
-            let geometry = ScrollerGeometry(
-                boundsSize: bounds.size,
-                scrollableRange: showsScroller ? scrollableRange : 0,
-                showsScroller: showsScroller,
-                knobEndpointInsets: (
-                    top: max(0, endpointInset - safeAreaInsets.top),
-                    bottom: max(0, endpointInset - safeAreaInsets.bottom)
-                )
-            )
-            if geometry != appliedScrollerGeometry {
-                appliedScrollerGeometry = geometry
-                scrollerGeometryPassCount &+= 1
-                applyScrollerGeometry(geometry)
-            }
-
-            let placement = (origin: bounds.origin, knobOffsetY: contentOffset.y - minOffset)
-            guard showsScroller else { return }
-            if let applied = appliedScrollerPlacement, applied == placement { return }
-            appliedScrollerPlacement = placement
-            // Scrolling moves the bounds origin, and the overlay is chrome
-            // rather than content, so it has to be dragged back. Moving the
-            // origin does not re-tile the way resizing does.
-            scrollerOverlay.setFrameOrigin(placement.origin)
-            // Overscroll is owned by the rubber-band animation; leaving the knob
-            // where it is matches AppKit's own behaviour at the edges.
-            if placement.knobOffsetY >= 0, placement.knobOffsetY <= scrollableRange {
-                scrollerOverlay.isSynchronizing = true
-                scrollerOverlay.contentView.scroll(to: .init(x: 0, y: placement.knobOffsetY))
-                scrollerOverlay.reflectScrolledClipView(scrollerOverlay.contentView)
-                scrollerOverlay.isSynchronizing = false
-            }
-            // Wheel events reach the overlay directly and AppKit flashes it
-            // itself; this covers programmatic and compensated motion.
-            scrollerOverlay.flashScrollers()
-        }
-
-        /// Re-tiles the overlay. Expensive, and correct only for the inputs
-        /// captured in ``ScrollerGeometry``.
-        private func applyScrollerGeometry(_ geometry: ScrollerGeometry) {
-            // List updates may run inside an implicit AppKit animation context.
-            // The overlay is infrastructure, not list content: keep its geometry
-            // current even while hidden and never interpolate it into position.
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0
-                context.allowsImplicitAnimation = false
-
-                scrollerOverlay.frame = bounds
-                scrollerOverlay.scrollerStyle = .overlay
-                // Autohiding follows the system preference while a knob is
-                // live. A hidden overlay pins it off so AppKit cannot fade
-                // a scroller back in over content that cannot scroll.
-                scrollerOverlay.autohidesScrollers = geometry.showsScroller
-                scrollerOverlay.hasVerticalScroller = true
-
-                scrollerOverlay.scrollerInsets = NSEdgeInsets(
-                    top: geometry.knobEndpointInsets.top,
-                    left: 0,
-                    bottom: geometry.knobEndpointInsets.bottom,
-                    right: 0
-                )
-                scrollerOverlay.layoutSubtreeIfNeeded()
-
-                let viewportSize = scrollerOverlay.contentSize
-                scrollerDocumentView.frame = CGRect(
-                    origin: .zero,
-                    size: CGSize(
-                        width: max(1, viewportSize.width),
-                        height: geometry.showsScroller
-                            ? max(viewportSize.height, geometry.scrollableRange + viewportSize.height)
-                            : viewportSize.height
-                    )
-                )
-                scrollerOverlay.tile()
-                scrollerOverlay.layoutSubtreeIfNeeded()
-
-                // AppKit places the scroller against the track it knew about
-                // when tiling, so the new document size needs a second pass.
-                scrollerOverlay.isHidden = !geometry.showsScroller
-                guard geometry.showsScroller else { return }
-                scrollerOverlay.tile()
-                scrollerOverlay.layoutSubtreeIfNeeded()
-            }
-            // The knob has to be re-placed against the new track.
-            appliedScrollerPlacement = nil
-        }
-
-        /// Puts the offset back in bounds at the end of a layout pass. It runs
-        /// even when the size is unchanged: a row shrinking above the anchor
-        /// and one growing below it cancel out in the total while the offset
-        /// still moved, and nothing else would notice it left the bounds.
-        ///
-        /// Whether the offset may sit outside the bounds is a question about
-        /// who owns it, not about the offset itself: deferred measurement
-        /// routinely shifts it past an edge on its way to the right place.
         private func reconcileOffsetWithContentSize() {
-            // A finger, momentum or a rebound already owns the offset. Those
-            // either clamp themselves every frame or are holding a deliberate
-            // overscroll, and interrupting one cancels the bounce. Asked of
-            // ownership rather than of ``isUserInteractingWithScroll``: an
-            // offset outside the content is wrong regardless of whether the
-            // host is currently allowed to scroll, and this is the only thing
-            // left running that would notice.
             guard !isScrollOffsetOwnedByUser else { return }
             if let target = scrollingTarget {
-                // A programmatic scroll keeps running, retargeted onto the new
-                // edge so it lands there instead of short of it.
                 let clamped = nearestScrollLocationInBounds(offset: target)
                 if clamped != target {
                     scroll(to: clamped)
@@ -835,291 +532,22 @@
             if animatesContentSizeCorrection {
                 scroll(to: clamped, preserveVelocity: false)
             } else {
-                // Deferred measurement resizes the content over and over, so
-                // an idle list lands on the new edge outright: animating every
-                // correction restarts the slide on each pass and reads as the
-                // list scrolling by itself.
                 applyContentOffsetWithoutTravel(clamped)
             }
         }
 
-        fileprivate func verticalScrollerTrackingDidBegin() {
-            _isVerticalScrollerTracking = true
-            cancelCurrentScrolling()
-        }
-
-        fileprivate func verticalScrollerTrackingDidEnd() {
-            _isVerticalScrollerTracking = false
-            // The same grace the wheel gets. Letting go of the knob is a reader
-            // finishing a scroll, not inviting one.
-            suppressAutoScroll()
-        }
-
-        func nativeScrollerDidScroll(to offsetY: CGFloat) {
-            let targetOffsetY = minimumContentOffset.y + offsetY
-            setContentOffset(.init(
-                x: contentOffset.x,
-                y: min(max(targetOffsetY, minimumContentOffset.y), maximumContentOffset.y)
-            ), animated: false)
-        }
-
-        public func flashScrollers() {
-            guard !scrollerOverlay.isHidden else { return }
-            scrollerOverlay.flashScrollers()
-        }
-
-        override open func scrollWheel(with event: NSEvent) {
-            scrollerOverlay.observeScrollWheel(event)
-
-            // Every wheel event carries the pointer, including momentum ones.
-            if event.window != nil {
-                _lastScrollWheelViewportY = convert(event.locationInWindow, from: nil).y - contentOffset.y
-            }
-
-            let min = minimumContentOffset
-            let max = maximumContentOffset
-            let isDiscreteWheelEvent = event.phase.isEmpty && event.momentumPhase.isEmpty
-            let hasDirectGesturePhase = !event.phase.isEmpty
-            let startsDirectInteraction = hasDirectGesturePhase && (
-                event.phase == .mayBegin
-                    || event.phase == .began
-                    || !_isTracking
-            )
-
-            // A local momentum or rebound animation owns deceleration after handoff. Keep
-            // consuming native momentum from that gesture even if the animation finishes
-            // before AppKit emits the terminal momentum event.
-            if _ignoresMomentumEvents, !event.momentumPhase.isEmpty {
-                if event.momentumPhase == .ended || event.momentumPhase == .cancelled {
-                    _ignoresMomentumEvents = false
-                }
-                return
-            }
-
-            // Armed on every event this view acts on, rather than on the one
-            // that ends the gesture: a discrete wheel has no end to speak of,
-            // and a trackpad gesture has three of them (lift, momentum,
-            // rebound), so re-arming a debounce costs the same as asking which
-            // one this is. Below the return above, though — AppKit goes on
-            // sending momentum for a second after a handoff the view already
-            // stopped acting on, and a window held open by discarded events
-            // would outlast a list that has visibly come to rest.
-            suppressAutoScroll()
-
-            // A new direct touch or phase-less wheel event interrupts the rebound
-            // and starts a fresh interaction.
-            if _isBouncing {
-                if startsDirectInteraction || isDiscreteWheelEvent {
-                    _isBouncing = false
-                    // Keep consuming the previous gesture's native momentum tail.
-                    // Direct events are still processed because they have no momentum phase.
-                    // fall through to normal began handling
-                } else {
-                    return
-                }
-            }
-
-            if startsDirectInteraction || event.momentumPhase == .began || isDiscreteWheelEvent {
-                // AppKit may begin a new touch with .mayBegin, or resume with
-                // .changed while the previous momentum stream is still ending.
-                // Always rebase raw tracking on the current visual offset so a
-                // tiny follow-up gesture cannot jump back to the prior release point.
-                _isTracking = true
-                _isBouncing = false
-                // Do not clear _ignoresMomentumEvents here. AppKit can deliver the
-                // old momentum tail after a new direct touch has already started.
-                cancelCurrentScrolling()
-                // Initialize raw offset from current visual position.
-                // If out of bounds (e.g. grabbed during bounce-back animation),
-                // invert the rubber-band to recover the raw position for continuity.
-                let currentY = contentOffset.y
-                if currentY < min.y {
-                    let visualOverscroll = min.y - currentY
-                    _trackingRawOffsetY = min.y - inverseRubberBand(visualOverscroll, dimension: bounds.height)
-                } else if currentY > max.y {
-                    let visualOverscroll = currentY - max.y
-                    _trackingRawOffsetY = max.y + inverseRubberBand(visualOverscroll, dimension: bounds.height)
-                } else {
-                    _trackingRawOffsetY = currentY
-                }
-                _scrollVelocityY = 0
-                _prevScrollTime = event.timestamp
-                _lastVelocitySampleTime = event.timestamp
-            }
-
-            let deltaY = event.scrollingDeltaY * (event.hasPreciseScrollingDeltas ? 1 : 10)
-            let previousRawOffsetY = _trackingRawOffsetY
-            _trackingRawOffsetY -= deltaY
-
-            // Apply rubber-band only for display
-            var visualY = _trackingRawOffsetY
-            if visualY < min.y {
-                let overscroll = min.y - visualY
-                visualY = min.y - rubberBand(overscroll, dimension: bounds.height)
-            } else if visualY > max.y {
-                let overscroll = visualY - max.y
-                visualY = max.y + rubberBand(overscroll, dimension: bounds.height)
-            }
-
-            // AppKit feeds the undamped gesture velocity into its snap-back
-            // curve. The ended event commonly carries a zero delta, so retain
-            // the last meaningful estimate rather than replacing it with zero.
-            let now = event.timestamp
-            let dt = now - _prevScrollTime
-            let rawDisplacement = _trackingRawOffsetY - previousRawOffsetY
-            if dt > 0 && dt < 0.1 && abs(rawDisplacement) > 0.5 {
-                _scrollVelocityY = rawDisplacement / dt
-                _lastVelocitySampleTime = now
-            } else if now - _lastVelocitySampleTime >= 0.1 {
-                _scrollVelocityY = 0
-            }
-            _prevScrollTime = now
-
-            if isDiscreteWheelEvent {
-                // A detented wheel jumps a line at a time; there is no glide
-                // for an elastic row lag to grade, only steps for it to wobble
-                // on. The motion is real scrolling, but it is excluded from
-                // travel so a row animator never springs on it — the effect
-                // belongs to direct manipulation, the trackpad and the touch
-                // screen.
-                applyContentOffsetWithoutTravel(.init(x: contentOffset.x, y: visualY))
-            } else {
-                applyContentOffset(.init(x: contentOffset.x, y: visualY))
-            }
-
-            // Once momentum carries the content past an edge, AppKit hands the
-            // remaining motion to its rebound curve and consumes subsequent
-            // momentum events from that gesture.
-            if !event.momentumPhase.isEmpty {
-                let clamped = nearestScrollLocationInBounds(offset: contentOffset)
-                if clamped != contentOffset {
-                    _ignoresMomentumEvents = true
-                    startRubberBandAnimation(to: clamped, velocityY: _scrollVelocityY)
-                    return
-                }
-            }
-
-            // Traditional mouse wheels do not report gesture phases. Treat every
-            // event as a complete interaction so the next delta starts from the
-            // current offset and programmatic scrolling is never left blocked.
-            if isDiscreteWheelEvent {
-                _isTracking = false
-                let clamped = nearestScrollLocationInBounds(offset: contentOffset)
-                if clamped != contentOffset {
-                    scroll(to: clamped, preserveVelocity: false)
-                    // After `scroll(to:)`, which clears it: the clamp is the
-                    // wheel's own motion unwinding, not a scroll anyone asked
-                    // for, so it is excluded from travel like the notches.
-                    _scrollAnimationIsExcludedFromTravel = true
-                }
-                return
-            }
-
-            // Finger lifted while out of bounds → immediately rebound with velocity.
-            // Do not wait for momentum; AppKit's decay curve owns the handoff.
-            if event.phase == .ended || event.phase == .cancelled {
-                _isTracking = false
-                let clamped = nearestScrollLocationInBounds(offset: contentOffset)
-                if clamped != contentOffset {
-                    _ignoresMomentumEvents = true
-                    startRubberBandAnimation(to: clamped, velocityY: _scrollVelocityY)
-                    return
-                }
-                if event.phase == .ended, startMomentumAnimation(velocityY: _scrollVelocityY) {
-                    return
-                }
-                // A cancelled gesture stops in place.
-            }
-
-            // Momentum ended while out of bounds (e.g. momentum carried past bounds)
-            if event.momentumPhase == .ended || event.momentumPhase == .cancelled {
-                _isTracking = false
-                let clamped = nearestScrollLocationInBounds(offset: contentOffset)
-                if clamped != contentOffset {
-                    scroll(to: clamped, preserveVelocity: false)
-                }
-            }
-        }
-
-        private func rubberBand(_ offset: CGFloat, dimension: CGFloat) -> CGFloat {
-            AppKitScrollPhysics.elasticDelta(forReboundDelta: offset, dimension: dimension)
-        }
-
-        private func inverseRubberBand(_ offset: CGFloat, dimension: CGFloat) -> CGFloat {
-            AppKitScrollPhysics.reboundDelta(forElasticDelta: offset, dimension: dimension)
-        }
-
-        private func startRubberBandAnimation(to target: CGPoint, velocityY: CGFloat) {
-            _isTracking = false
-            _isBouncing = true
-            _momentumAnimation = nil
-            _rubberBandAnimation = .init(
-                targetOffset: target,
-                initialPositionY: contentOffset.y - target.y,
-                // AppKit's function uses the opposite sign from visual velocity.
-                initialVelocityY: -velocityY
-            )
-            scrollingTarget = target
-
-            guard scrollingDisplayLink == nil else { return }
-            let link = DisplayLink()
-            link.delegatingObject(self)
-            scrollingDisplayLink = link
-            scrollingTik = CACurrentMediaTime()
-        }
-
-        @discardableResult
-        private func startMomentumAnimation(velocityY: CGFloat) -> Bool {
-            let duration = AppKitScrollPhysics.momentumDuration(initialVelocity: velocityY)
-            guard duration > 0 else { return false }
-
-            _isTracking = false
-            _isBouncing = false
-            _ignoresMomentumEvents = true
-            _rubberBandAnimation = nil
-            _momentumAnimation = .init(
-                initialOffset: contentOffset,
-                initialVelocityY: velocityY,
-                duration: duration
-            )
-            scrollingTarget = nil
-
-            guard scrollingDisplayLink == nil else { return true }
-            let link = DisplayLink()
-            link.delegatingObject(self)
-            scrollingDisplayLink = link
-            scrollingTik = CACurrentMediaTime()
-            return true
-        }
-
-        /// scroll to an offset
-        /// - Parameters:
-        ///   - offset: where
-        ///   - angularFrequency: bigger value will handle animation faster
-        ///   - preserveVelocity: keep current velocity when retargeting
         public func scroll(
             to offset: CGPoint,
             angularFrequency: Double? = nil,
             preserveVelocity: Bool = true
         ) {
-            _rubberBandAnimation = nil
-            _momentumAnimation = nil
-            _isBouncing = false
-            // A scroll someone asked for is travel. Only the discrete-wheel
-            // clamp re-marks itself, immediately after calling in here.
-            _scrollAnimationIsExcludedFromTravel = false
             let target = nearestScrollLocationInBounds(offset: offset)
-            let velocity: CGPoint = if preserveVelocity {
-                .init(
-                    x: scrollingContext.x.velocity,
-                    y: scrollingContext.y.velocity
-                )
-            } else {
-                .init(x: 0, y: 0)
-            }
+            let velocity: CGPoint = preserveVelocity
+                ? .init(x: scrollingContext.x.velocity, y: scrollingContext.y.velocity)
+                : .zero
             scrollingContext.setCurrent(
                 .init(x: ceil(contentOffset.x), y: ceil(contentOffset.y)),
-                vel: .init(x: velocity.x, y: velocity.y)
+                vel: velocity
             )
             if let angularFrequency {
                 assert(angularFrequency > 0)
@@ -1130,145 +558,18 @@
             scrollingTarget = target
 
             guard scrollingDisplayLink == nil else { return }
-            let link = DisplayLink()
-            link.delegatingObject(self)
-            scrollingDisplayLink = link
-            scrollingTik = CACurrentMediaTime()
+            scrollingDisplayLink = NativeListDisplayLink(attachedTo: self) { [weak self] duration in
+                self?.handleScrollingAnimation(duration: duration)
+            }
         }
 
         public func cancelCurrentScrolling() {
-            let currentContentOffset = contentOffset
-            scrollingContext.setCurrent(
-                .init(x: currentContentOffset.x, y: currentContentOffset.y),
-                vel: .init(x: 0, y: 0)
-            )
+            let current = contentOffset
+            scrollingContext.setCurrent(current, vel: .zero)
+            scrollingContext.setTarget(current)
             scrollingTarget = nil
-            _isBouncing = false
-            _rubberBandAnimation = nil
-            _momentumAnimation = nil
-            _scrollAnimationIsExcludedFromTravel = false
-            // Do not clear _ignoresMomentumEvents here. AppKit may still be
-            // sending native momentum from a gesture owned by a local animation.
-            scrollingContext.setTarget(.init(x: currentContentOffset.x, y: currentContentOffset.y))
-            scrollingDisplayLink?.delegatingObject(nil)
+            scrollingDisplayLink?.invalidate()
             scrollingDisplayLink = nil
-        }
-
-        /// Shifts the current offset and every piece of in-flight scroll state
-        /// by `dy` without cancelling tracking, momentum, rebound, or
-        /// programmatic scrolling. Deferred height correction uses this so
-        /// rows above the viewport can change size while visible rows stay
-        /// visually stationary.
-        func compensateScrollOffset(by dy: CGFloat) {
-            guard dy != 0 else { return }
-            // The whole point of this shift is that the reader cannot see it.
-            // Animating it is exactly how it becomes visible — and by the same
-            // argument it is not travel a row animator may spring on.
-            scrollLedger.exclude(dy)
-            _contentOffset.y += dy
-            withoutListAnimation { setBoundsOrigin(_contentOffset) }
-            needsLayout = true
-            _trackingRawOffsetY += dy
-            _momentumAnimation?.initialOffset.y += dy
-            _rubberBandAnimation?.targetOffset.y += dy
-            if var target = scrollingTarget {
-                target.y += dy
-                scrollingTarget = target
-                scrollingContext.setCurrent(
-                    .init(x: scrollingContext.x.value, y: scrollingContext.y.value + dy),
-                    vel: .init(
-                        x: scrollingContext.x.velocity,
-                        y: scrollingContext.y.velocity
-                    )
-                )
-                scrollingContext.setTarget(.init(x: ceil(target.x), y: ceil(target.y)))
-            }
-        }
-
-        func handleScrollingAnimation(_ context: DisplayLinkCallbackContext) {
-            if _isTracking || _isVerticalScrollerTracking {
-                cancelCurrentScrolling()
-                return
-            }
-
-            if var rubberBandAnimation = _rubberBandAnimation {
-                rubberBandAnimation.elapsedTime += min(1 / 30, context.duration)
-                let displacement = AppKitScrollPhysics.elasticDelta(
-                    initialPosition: rubberBandAnimation.initialPositionY,
-                    initialVelocity: rubberBandAnimation.initialVelocityY,
-                    elapsedTime: rubberBandAnimation.elapsedTime
-                )
-                let roundedDisplacement = AppKitScrollPhysics.roundToDevicePixelTowardZero(displacement)
-                let animationComplete = roundedDisplacement == 0
-                    && rubberBandAnimation.elapsedTime > 0.024
-
-                if animationComplete {
-                    applyContentOffset(rubberBandAnimation.targetOffset)
-                    cancelCurrentScrolling()
-                } else {
-                    _rubberBandAnimation = rubberBandAnimation
-                    applyContentOffset(.init(
-                        x: rubberBandAnimation.targetOffset.x,
-                        y: rubberBandAnimation.targetOffset.y + roundedDisplacement
-                    ))
-                }
-                return
-            }
-
-            if var momentumAnimation = _momentumAnimation {
-                momentumAnimation.elapsedTime += min(1 / 30, context.duration)
-                let displacement = AppKitScrollPhysics.momentumDisplacement(
-                    initialVelocity: momentumAnimation.initialVelocityY,
-                    elapsedTime: momentumAnimation.elapsedTime,
-                    duration: momentumAnimation.duration
-                )
-                let proposedOffset = CGPoint(
-                    x: momentumAnimation.initialOffset.x,
-                    y: momentumAnimation.initialOffset.y + displacement
-                )
-                let clampedOffset = nearestScrollLocationInBounds(offset: proposedOffset)
-
-                if proposedOffset != clampedOffset {
-                    let rawOverscroll = proposedOffset.y - clampedOffset.y
-                    let visualOverscroll = AppKitScrollPhysics.elasticDelta(
-                        forReboundDelta: rawOverscroll,
-                        dimension: bounds.height
-                    )
-                    let velocity = AppKitScrollPhysics.momentumVelocity(
-                        initialVelocity: momentumAnimation.initialVelocityY,
-                        elapsedTime: momentumAnimation.elapsedTime,
-                        duration: momentumAnimation.duration
-                    )
-                    applyContentOffset(.init(
-                        x: clampedOffset.x,
-                        y: clampedOffset.y + visualOverscroll
-                    ))
-                    startRubberBandAnimation(to: clampedOffset, velocityY: velocity)
-                } else if momentumAnimation.elapsedTime >= momentumAnimation.duration {
-                    applyContentOffset(proposedOffset)
-                    cancelCurrentScrolling()
-                } else {
-                    _momentumAnimation = momentumAnimation
-                    applyContentOffset(proposedOffset)
-                }
-                return
-            }
-
-            if scrollingContext.completed {
-                cancelCurrentScrolling()
-                return
-            }
-            let delta = min(1 / 30, context.duration)
-            scrollingContext.update(withDeltaTime: delta)
-            let loc = CGPoint(
-                x: scrollingContext.x.value,
-                y: scrollingContext.y.value
-            )
-            if _scrollAnimationIsExcludedFromTravel {
-                applyContentOffsetWithoutTravel(loc)
-            } else {
-                applyContentOffset(loc)
-            }
         }
 
         open func setContentOffset(_ contentOffset: CGPoint, animated: Bool) {
@@ -1280,31 +581,124 @@
             }
         }
 
-        /// Moves the offset without calling it travel.
-        ///
-        /// A jump to an arbitrary offset and a clamp back inside the bounds
-        /// both relocate the reader rather than carry them, so neither is
-        /// scrolling a row animator should answer.
+        /// Translates the viewport and any in-flight programmatic spring after
+        /// document coordinates change. AppKit remains the owner of native
+        /// gesture, momentum, elasticity, and scroller state.
+        open func rebaseContentOffset(by delta: CGPoint) {
+            guard delta.x.isFinite, delta.y.isFinite, delta != .zero else { return }
+
+            if let target = scrollingTarget {
+                let translatedTarget = CGPoint(x: target.x + delta.x, y: target.y + delta.y)
+                scrollingContext.setCurrent(
+                    .init(
+                        x: scrollingContext.x.value + delta.x,
+                        y: scrollingContext.y.value + delta.y
+                    ),
+                    vel: .init(
+                        x: scrollingContext.x.velocity,
+                        y: scrollingContext.y.velocity
+                    )
+                )
+                scrollingContext.setTarget(translatedTarget)
+                scrollingTarget = translatedTarget
+            }
+            performExcludingNativeOffsetTravel {
+                applyContentOffset(.init(
+                    x: contentOffset.x + delta.x,
+                    y: contentOffset.y + delta.y
+                ))
+            }
+        }
+
+        func compensateScrollOffset(by dy: CGFloat) {
+            rebaseContentOffset(by: .init(x: 0, y: dy))
+        }
+
+        public func flashScrollers() {
+            nativeScrollView.flashScrollers()
+        }
+
+        func handleScrollingAnimation(duration: TimeInterval) {
+            if isTracking || scrollingContext.completed {
+                cancelCurrentScrolling()
+                return
+            }
+            scrollingContext.update(withDeltaTime: min(1 / 30, duration))
+            applyContentOffset(nearestScrollLocationInBounds(offset: .init(
+                x: scrollingContext.x.value,
+                y: scrollingContext.y.value
+            )))
+        }
+
+        func nativeScrollWheelWillBegin(_ event: NSEvent) {
+            suppressAutoScroll()
+            if event.window != nil {
+                _lastScrollWheelViewportY = convert(event.locationInWindow, from: nil).y
+            }
+            excludesNativeOffsetTravel = event.phase.isEmpty && event.momentumPhase.isEmpty
+            if !event.phase.isEmpty,
+               event.phase != .ended,
+               event.phase != .cancelled
+            {
+                _isTracking = true
+            }
+        }
+
+        func nativeScrollWheelDidEnd(_ event: NSEvent) {
+            excludesNativeOffsetTravel = false
+            if event.phase == .ended || event.phase == .cancelled {
+                _isTracking = false
+            }
+        }
+
+        @objc private func nativeLiveScrollDidBegin(_: Notification) {
+            isNativeLiveScrollActive = true
+            if let event = NSApp.currentEvent,
+               event.type == .leftMouseDown || event.type == .leftMouseDragged
+            {
+                // AppKit's live-scroll notifications cover the system
+                // scroller too. Remember direct knob tracking without
+                // replacing NSScrollView's native NSScroller.
+                _isVerticalScrollerTracking = true
+            }
+            cancelCurrentScrolling()
+            suppressAutoScroll()
+        }
+
+        @objc private func nativeLiveScrollDidEnd(_: Notification) {
+            isNativeLiveScrollActive = false
+            _isVerticalScrollerTracking = false
+            suppressAutoScroll()
+            needsLayout = true
+        }
+
+        @objc private func nativeClipViewBoundsDidChange(_: Notification) {
+            let offsetY = contentOffset.y
+            if excludesNativeOffsetTravel {
+                scrollLedger.exclude(offsetY - lastObservedNativeOffsetY)
+            }
+            scrollLedger.accrue(offsetY: offsetY)
+            lastObservedNativeOffsetY = offsetY
+            needsLayout = true
+        }
+
+        private func performExcludingNativeOffsetTravel(_ body: () -> Void) {
+            let wasExcluding = excludesNativeOffsetTravel
+            excludesNativeOffsetTravel = true
+            body()
+            excludesNativeOffsetTravel = wasExcluding
+        }
+
         private func applyContentOffsetWithoutTravel(_ offset: CGPoint) {
-            scrollLedger.exclude(offset.y - contentOffset.y)
-            applyContentOffset(offset)
+            performExcludingNativeOffsetTravel { applyContentOffset(offset) }
         }
 
-        /// The funnel for every offset this class owns: display-link ticks, the
-        /// clamp after a content-size change, and the unanimated branch of
-        /// `setContentOffset`. None of those is a scroll anyone asked for, so
-        /// none may ride an animation the caller happens to have open. The
-        /// scrolls this class does animate run off the display link, which the
-        /// suppression never touches; the open setter is left alone, since
-        /// animating that one is a fair thing for a host to ask for.
-        private func applyContentOffset(_ contentOffset: CGPoint) {
-            withoutListAnimation { self.contentOffset = contentOffset }
-        }
-    }
-
-    extension ListScrollView: @MainActor DisplayLinkDelegate {
-        public func synchronization(context: DisplayLinkCallbackContext) {
-            handleScrollingAnimation(context)
+        private func applyContentOffset(_ offset: CGPoint) {
+            withoutListAnimation {
+                nativeScrollView.contentView.scroll(to: offset)
+                nativeScrollView.reflectScrolledClipView(nativeScrollView.contentView)
+            }
+            needsLayout = true
         }
     }
 
@@ -1326,7 +720,9 @@ extension ListScrollView {
     /// cover is a frame where the host scrolls the reader back to the tail.
     /// That is the jitter this exists to remove, so the window is sized to
     /// outlast a slow notch rather than a fast one.
-    static var autoScrollSuppressionWindow: TimeInterval { 0.25 }
+    static var autoScrollSuppressionWindow: TimeInterval {
+        0.25
+    }
 
     /// Holds auto scroll off for ``autoScrollSuppressionWindow`` seconds,
     /// restarting the window if one is already running.

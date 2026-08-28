@@ -8,10 +8,12 @@
 
 /* Begin PBXBuildFile section */
 		50DDAF502DDE177300351E46 /* ListViewKit in Frameworks */ = {isa = PBXBuildFile; productRef = 50DDAF4F2DDE177300351E46 /* ListViewKit */; };
+		61A1B0CC2E5F000100351E46 /* ListViewKit in Frameworks */ = {isa = PBXBuildFile; productRef = 61A1B0CB2E5F000100351E46 /* ListViewKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		50DDAF162DDE16FA00351E46 /* ListExample.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ListExample.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		61A1B0C12E5F000100351E46 /* ListExampleMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ListExampleMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -22,6 +24,13 @@
 			);
 			target = 50DDAF152DDE16FA00351E46 /* ListExample */;
 		};
+		61A1B0C32E5F000100351E46 /* Exceptions for "ListExampleMac" folder in "ListExampleMac" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 61A1B0C52E5F000100351E46 /* ListExampleMac */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -31,6 +40,14 @@
 				50DDAF282DDE16FB00351E46 /* Exceptions for "ListExample" folder in "ListExample" target */,
 			);
 			path = ListExample;
+			sourceTree = "<group>";
+		};
+		61A1B0C22E5F000100351E46 /* ListExampleMac */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				61A1B0C32E5F000100351E46 /* Exceptions for "ListExampleMac" folder in "ListExampleMac" target */,
+			);
+			path = ListExampleMac;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -44,6 +61,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		61A1B0C42E5F000100351E46 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				61A1B0CC2E5F000100351E46 /* ListViewKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -51,6 +76,7 @@
 			isa = PBXGroup;
 			children = (
 				50DDAF182DDE16FA00351E46 /* ListExample */,
+				61A1B0C22E5F000100351E46 /* ListExampleMac */,
 				50DDAF4E2DDE177300351E46 /* Frameworks */,
 				50DDAF172DDE16FA00351E46 /* Products */,
 			);
@@ -60,6 +86,7 @@
 			isa = PBXGroup;
 			children = (
 				50DDAF162DDE16FA00351E46 /* ListExample.app */,
+				61A1B0C12E5F000100351E46 /* ListExampleMac.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -97,6 +124,29 @@
 			productReference = 50DDAF162DDE16FA00351E46 /* ListExample.app */;
 			productType = "com.apple.product-type.application";
 		};
+		61A1B0C52E5F000100351E46 /* ListExampleMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 61A1B0CA2E5F000100351E46 /* Build configuration list for PBXNativeTarget "ListExampleMac" */;
+			buildPhases = (
+				61A1B0C62E5F000100351E46 /* Sources */,
+				61A1B0C42E5F000100351E46 /* Frameworks */,
+				61A1B0C72E5F000100351E46 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				61A1B0C22E5F000100351E46 /* ListExampleMac */,
+			);
+			name = ListExampleMac;
+			packageProductDependencies = (
+				61A1B0CB2E5F000100351E46 /* ListViewKit */,
+			);
+			productName = ListExampleMac;
+			productReference = 61A1B0C12E5F000100351E46 /* ListExampleMac.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -108,6 +158,9 @@
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					50DDAF152DDE16FA00351E46 = {
+						CreatedOnToolsVersion = 16.3;
+					};
+					61A1B0C52E5F000100351E46 = {
 						CreatedOnToolsVersion = 16.3;
 					};
 				};
@@ -127,6 +180,7 @@
 			projectRoot = "";
 			targets = (
 				50DDAF152DDE16FA00351E46 /* ListExample */,
+				61A1B0C52E5F000100351E46 /* ListExampleMac */,
 			);
 		};
 /* End PBXProject section */
@@ -139,10 +193,24 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		61A1B0C72E5F000100351E46 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		50DDAF122DDE16FA00351E46 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		61A1B0C62E5F000100351E46 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -333,6 +401,58 @@
 			};
 			name = Release;
 		};
+		61A1B0C82E5F000100351E46 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 964G86XT2P;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ListExampleMac/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = wiki.qaq.ListExampleMac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		61A1B0C92E5F000100351E46 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 964G86XT2P;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ListExampleMac/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = wiki.qaq.ListExampleMac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -354,10 +474,23 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		61A1B0CA2E5F000100351E46 /* Build configuration list for PBXNativeTarget "ListExampleMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				61A1B0C82E5F000100351E46 /* Debug */,
+				61A1B0C92E5F000100351E46 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		50DDAF4F2DDE177300351E46 /* ListViewKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ListViewKit;
+		};
+		61A1B0CB2E5F000100351E46 /* ListViewKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = ListViewKit;
 		};

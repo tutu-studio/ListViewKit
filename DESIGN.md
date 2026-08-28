@@ -1,5 +1,10 @@
 # ListViewKit 3.0 设计
 
+> 当前分支在 4.3.2 布局与 row animator 架构上，将 AppKit 滚动层替换为原生
+> `NSScrollView → NSClipView → ListDocumentView`。本文关于自绘 AppKit
+> momentum、elasticity 和 overlay scroller 的段落仅记录上游 3.x 的历史设计；
+> 当前实现由 AppKit 管理这些行为，ListViewKit 只保留程序化滚动 spring。
+
 本文是 3.0 的施工图。2.x 的问题、3.0 的模型、要砍掉的 API、以及分几步落地，
 都在这里。每一步单独 commit，每一步都要有测试和 benchmark 数字。
 

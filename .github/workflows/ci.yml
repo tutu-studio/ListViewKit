@@ -30,7 +30,14 @@ jobs:
         run: swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 
       - name: Build macOS example
-        run: swift build --package-path Example/ListExampleMac
+        run: |
+          xcodebuild \
+            -workspace Example/ListExample.xcworkspace \
+            -scheme ListExampleMac \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/ListExampleMacDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
 
       - name: Build runtime benchmarks
         run: swift build -c release --product ListViewKitBenchmarks

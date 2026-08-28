@@ -5,9 +5,6 @@
       location = "group:ListExample.xcodeproj">
    </FileRef>
    <FileRef
-      location = "group:ListExampleMac">
-   </FileRef>
-   <FileRef
       location = "group:../">
    </FileRef>
 </Workspace>

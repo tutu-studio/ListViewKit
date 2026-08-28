@@ -111,7 +111,7 @@ final class ViewController: UIViewController {
                 try? await Task.sleep(for: .milliseconds(5))
                 item.text.append(character)
                 listView.update(item)
-                listView.scrollToBottom(animated: false)
+                listView.scrollToBottom(animated: true)
             }
         }
     }
